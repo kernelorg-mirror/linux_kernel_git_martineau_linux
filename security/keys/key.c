@@ -806,9 +806,7 @@ key_ref_t key_create_or_update(key_ref_t keyring_ref,
 	struct key *keyring, *key = NULL;
 	key_ref_t key_ref;
 	int ret;
-	int (*restrict_link)(struct key *,
-			     const struct key_type *,
-			     const union key_payload *) = NULL;
+	restrict_link_func_t restrict_link = NULL;
 
 	/* look up the key type to see if it's one of the registered kernel
 	 * types */
