@@ -18,6 +18,7 @@
 #include <linux/slab.h>
 #include <linux/ctype.h>
 #include <keys/user-type.h>
+#include <keys/system_keyring.h>
 #include "asymmetric_keys.h"
 
 MODULE_LICENSE("GPL");
@@ -491,6 +492,46 @@ static int asymmetric_key_verify_signature(struct kernel_pkey_params *params,
 	return verify_signature(params->key, &sig);
 }
 
+static struct key_restriction *asymmetric_restriction_alloc(
+	restrict_link_func_t check,
+	void (*free_data)(void *),
+	void *data)
+{
+	struct key_restriction *keyres = kzalloc(sizeof(struct key_restriction),
+						 GFP_KERNEL);
+	if (!keyres) {
+		if (free_data)
+			free_data(data);
+
+		return ERR_PTR(-ENOMEM);
+	}
+
+	keyres->check = check;
+	keyres->free_data = free_data;
+	keyres->data = data;
+
+	return keyres;
+}
+
+/*
+ * look up keyring restrict functions for asymmetric keys
+ */
+static struct key_restriction *asymmetric_lookup_restrict(char *restriction)
+{
+	const char *restrict_method;
+
+	if (strcmp("builtin_trusted", restriction) == 0)
+		return asymmetric_restriction_alloc(
+			restrict_link_by_builtin_trusted, NULL, NULL);
+
+	if (strcmp("builtin_and_secondary_trusted", restriction) == 0)
+		return asymmetric_restriction_alloc(
+			restrict_link_by_builtin_and_secondary_trusted,
+			NULL, NULL);
+
+	return ERR_PTR(-EINVAL);
+}
+
 struct key_type key_type_asymmetric = {
 	.name			= "asymmetric",
 	.preparse		= asymmetric_key_preparse,
@@ -503,6 +544,7 @@ struct key_type key_type_asymmetric = {
 	.asym_query		= query_asymmetric_key,
 	.asym_eds_op		= asymmetric_key_eds_op,
 	.asym_verify_signature	= asymmetric_key_verify_signature,
+	.lookup_restrict	= asymmetric_lookup_restrict,
 };
 EXPORT_SYMBOL_GPL(key_type_asymmetric);
 
