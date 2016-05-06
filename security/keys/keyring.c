@@ -23,6 +23,13 @@
 #include "internal.h"
 
 /*
+ * Layout of preparse payload
+ */
+enum {
+	keyring_restrict_link,
+};
+
+/*
  * When plumbing the depths of the key tree, this sets a hard limit
  * set on how deep we're willing to go.
  */
@@ -126,28 +133,103 @@ static void keyring_publish_name(struct key *keyring)
 }
 
 /*
+ * Parse the keyring options and fill in the required keyring members.
+ *
+ * Expected format is: "restrict=<key_type>[:<options>]"
+ *
+ * Returns 0 if the option string is valid (including the empty case),
+ * otherwise -EINVAL.
+ */
+static int keyring_datablob_parse(char *datablob,
+				  struct key_preparsed_payload *prep)
+{
+	char *type_name;
+	struct key_type *restrict_type = NULL;
+	struct key_restriction *restrict_link;
+	int ret = -EINVAL;
+	static const char restrict_prefix[] = "restrict=";
+
+	if (*datablob == '\0')
+		return 0;
+
+	if (!strstarts(datablob, restrict_prefix))
+		return -EINVAL;
+
+	datablob += sizeof(restrict_prefix) - 1;
+
+	type_name = strsep(&datablob, ":");
+
+	restrict_type = key_type_lookup(type_name);
+	if (IS_ERR(restrict_type))
+		return -EINVAL;
+
+	if (!restrict_type->lookup_restrict)
+		goto error;
+
+	restrict_link = restrict_type->lookup_restrict(datablob);
+	if (IS_ERR(restrict_link))
+		goto error;
+
+	prep->payload.data[keyring_restrict_link] = restrict_link;
+	ret = 0;
+
+error:
+	key_type_put(restrict_type);
+
+	return ret;
+}
+
+/*
  * Preparse a keyring payload
  */
 static int keyring_preparse(struct key_preparsed_payload *prep)
 {
-	return prep->datalen != 0 ? -EINVAL : 0;
+	char *datablob;
+	size_t datalen = prep->datalen;
+	int ret = 0;
+
+	if (datalen) {
+		datablob = kmalloc(datalen + 1, GFP_KERNEL);
+		if (!datablob)
+			return -ENOMEM;
+
+		memcpy(datablob, prep->data, datalen);
+		datablob[datalen] = '\0';
+
+		ret = keyring_datablob_parse(datablob, prep);
+
+		kfree(datablob);
+	}
+
+	return ret;
 }
 
 /*
- * Free a preparse of a user defined key payload
+ * Free a preparse of a keyring payload
  */
 static void keyring_free_preparse(struct key_preparsed_payload *prep)
 {
+	struct key_restriction *keyres;
+
+	keyres = prep->payload.data[keyring_restrict_link];
+
+	if (keyres && keyres->free_data) {
+		keyres->free_data(keyres->data);
+		kfree(keyres);
+	}
 }
 
 /*
  * Initialise a keyring.
  *
- * Returns 0 on success, -EINVAL if given any data.
+ * Returns 0 on success.
  */
 static int keyring_instantiate(struct key *keyring,
 			       struct key_preparsed_payload *prep)
 {
+	keyring->restrict_link = prep->payload.data[keyring_restrict_link];
+	prep->payload.data[keyring_restrict_link] = NULL;
+
 	assoc_array_init(&keyring->keys);
 	/* make the keyring available by name if it has one */
 	keyring_publish_name(keyring);
