@@ -20,7 +20,16 @@
 #include <keys/user-type.h>
 #include <linux/assoc_array_priv.h>
 #include <linux/uaccess.h>
+#include <linux/parser.h>
 #include "internal.h"
+
+/*
+ * Layout of preparse payload
+ */
+enum {
+	keyring_restrict_link,
+	keyring_restrict_key_ref,
+};
 
 /*
  * When plumbing the depths of the key tree, this sets a hard limit
@@ -125,29 +134,141 @@ static void keyring_publish_name(struct key *keyring)
 	}
 }
 
+enum {
+	Opt_err = -1,
+	Opt_restrict_type,
+	Opt_restrict_by,
+	Opt_restrict_key,
+};
+
+static const match_table_t keyring_tokens = {
+	{ Opt_restrict_type,	"restrict_type=%s" },
+	{ Opt_restrict_by,	"restrict_by=%s" },
+	{ Opt_restrict_key,	"restrict_key=%d" },
+	{ Opt_err,		NULL },
+};
+
+/*
+ * datablob_parse - parse the keyring options and fill in the required
+ *                  keyring members.
+ *
+ * Returns true if the option string is valid (including the empty case),
+ * otherwise false.
+ */
+static bool datablob_parse(char *datablob, struct key_preparsed_payload *prep)
+{
+	substring_t args[MAX_OPT_ARGS];
+	char *c;
+	int token;
+	unsigned long token_mask = 0;
+	struct key_type *restrict_type = NULL;
+	char *restrict_by = NULL;
+	restrict_link_func_t restrict_link;
+	key_serial_t serial = 0;
+	int result;
+	key_ref_t key_ref;
+
+	while ((c = strsep(&datablob, " \t"))) {
+		if (*c == '\0' || *c == ' ' || *c == '\t')
+			continue;
+
+		token = match_token(c, keyring_tokens, args);
+		if (test_and_set_bit(token, &token_mask))
+			return false;
+
+		switch (token) {
+		case Opt_restrict_type:
+			restrict_type = key_type_lookup(args[0].from);
+			if (IS_ERR(restrict_type))
+				return false;
+			break;
+		case Opt_restrict_by:
+			restrict_by = args[0].from;
+			break;
+		case Opt_restrict_key:
+			result = kstrtos32(args[0].from, 0, &serial);
+			if (result < 0)
+				return false;
+			break;
+		case Opt_err:
+			return false;
+		}
+	}
+
+	if (restrict_type && restrict_by) {
+		if (!restrict_type->lookup_restrict)
+			return false;
+
+		restrict_link = restrict_type->lookup_restrict(restrict_by);
+		if (IS_ERR(restrict_link))
+			return false;
+
+		if (test_bit(Opt_restrict_key, &token_mask)) {
+			key_ref = lookup_user_key(serial, 0, 0);
+			if (IS_ERR(key_ref))
+				return false;
+
+			prep->payload.data[keyring_restrict_key_ref] = key_ref;
+		}
+
+		prep->payload.data[keyring_restrict_link] = restrict_link;
+	} else if (restrict_type || restrict_by) {
+		return false;
+	}
+
+	return true;
+}
+
 /*
  * Preparse a keyring payload
  */
 static int keyring_preparse(struct key_preparsed_payload *prep)
 {
-	return prep->datalen != 0 ? -EINVAL : 0;
+	char *datablob;
+	size_t datalen = prep->datalen;
+	bool valid;
+
+	if (datalen) {
+		datablob = kmalloc(datalen + 1, GFP_KERNEL);
+		if (!datablob)
+			return -ENOMEM;
+
+		memcpy(datablob, prep->data, datalen);
+		datablob[datalen] = '\0';
+
+		valid = datablob_parse(datablob, prep);
+
+		kfree(datablob);
+
+		if (!valid)
+			return -EINVAL;
+	}
+
+	return 0;
 }
 
 /*
- * Free a preparse of a user defined key payload
+ * Free a preparse of a keyring payload
  */
 static void keyring_free_preparse(struct key_preparsed_payload *prep)
 {
+	key_ref_put(prep->payload.data[keyring_restrict_key_ref]);
 }
 
 /*
  * Initialise a keyring.
  *
- * Returns 0 on success, -EINVAL if given any data.
+ * Returns 0 on success.
  */
 static int keyring_instantiate(struct key *keyring,
 			       struct key_preparsed_payload *prep)
 {
+	key_ref_t key_ref = prep->payload.data[keyring_restrict_key_ref];
+
+	keyring->restrict_link = prep->payload.data[keyring_restrict_link];
+	keyring->restrict_key = key_ref_to_ptr(key_ref);
+	key_get(keyring->restrict_key);
+
 	assoc_array_init(&keyring->keys);
 	/* make the keyring available by name if it has one */
 	keyring_publish_name(keyring);
@@ -394,6 +515,7 @@ static void keyring_destroy(struct key *keyring)
 		write_unlock(&keyring_name_lock);
 	}
 
+	key_put(keyring->restrict_key);
 	assoc_array_destroy(&keyring->keys, &keyring_assoc_array_ops);
 }
 
