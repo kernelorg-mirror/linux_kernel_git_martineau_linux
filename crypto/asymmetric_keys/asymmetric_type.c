@@ -17,6 +17,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/ctype.h>
+#include <keys/system_keyring.h>
 #include "asymmetric_keys.h"
 
 MODULE_LICENSE("GPL");
@@ -451,15 +452,55 @@ static void asymmetric_key_destroy(struct key *key)
 	asymmetric_key_free_kids(kids);
 }
 
+static struct key_restriction *asymmetric_restriction_alloc(
+	key_restrict_link_func_t check,
+	void (*free_data)(void *),
+	void *data)
+{
+	struct key_restriction *keyres =
+		kzalloc(sizeof(struct key_restriction), GFP_KERNEL);
+
+	if (!keyres) {
+		if (free_data)
+			free_data(data);
+
+		return ERR_PTR(-ENOMEM);
+	}
+
+	keyres->check = check;
+	keyres->free_data = free_data;
+	keyres->data = data;
+
+	return keyres;
+}
+
+/*
+ * look up keyring restrict functions for asymmetric keys
+ */
+static struct key_restriction *asymmetric_lookup_restrict(char *restriction)
+{
+	if (strcmp("builtin_trusted", restriction) == 0)
+		return asymmetric_restriction_alloc(
+			restrict_link_by_builtin_trusted, NULL, NULL);
+
+	if (strcmp("builtin_and_secondary_trusted", restriction) == 0)
+		return asymmetric_restriction_alloc(
+			restrict_link_by_builtin_and_secondary_trusted,
+			NULL, NULL);
+
+	return ERR_PTR(-EINVAL);
+}
+
 struct key_type key_type_asymmetric = {
-	.name		= "asymmetric",
-	.preparse	= asymmetric_key_preparse,
-	.free_preparse	= asymmetric_key_free_preparse,
-	.instantiate	= generic_key_instantiate,
-	.match_preparse	= asymmetric_key_match_preparse,
-	.match_free	= asymmetric_key_match_free,
-	.destroy	= asymmetric_key_destroy,
-	.describe	= asymmetric_key_describe,
+	.name			= "asymmetric",
+	.preparse		= asymmetric_key_preparse,
+	.free_preparse		= asymmetric_key_free_preparse,
+	.instantiate		= generic_key_instantiate,
+	.match_preparse		= asymmetric_key_match_preparse,
+	.match_free		= asymmetric_key_match_free,
+	.destroy		= asymmetric_key_destroy,
+	.describe		= asymmetric_key_describe,
+	.lookup_restrict	= asymmetric_lookup_restrict,
 };
 EXPORT_SYMBOL_GPL(key_type_asymmetric);
 
