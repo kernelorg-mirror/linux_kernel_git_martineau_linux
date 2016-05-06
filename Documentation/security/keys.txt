@@ -1645,6 +1645,14 @@ The structure has a number of fields, some of which are mandatory:
      If successful, 0 will be returned.  If the key doesn't support this,
      EOPNOTSUPP will be returned.
 
+ (*) restrict_link_func_t (*lookup_restrict)(const char *restriction);
+
+     This optional method is used to enable userspace configuration of
+     keyring restrictions. The value assigned to the "restrict_by"
+     option at keyring creation is passed in, and this method returns
+     a pointer to the restrict_link function associated with that
+     name. If there is no match, -EINVAL is returned.
+
 
 ============================
 REQUEST-KEY CALLBACK SERVICE

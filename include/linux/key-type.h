@@ -158,6 +158,14 @@ struct key_type {
 	int (*asym_verify_signature)(struct kernel_pkey_params *params,
 				     const void *in, const void *in2);
 
+	/* Look up a keyring access restrict function (optional)
+	 *
+	 * - NULL is a valid return value (meaning the requested restriction
+	 *   is known but will never block addition of a key)
+	 * - should return -EINVAL if the restriction is unknown
+	 */
+	restrict_link_func_t (*lookup_restrict)(const char *restriction);
+
 	/* internal fields */
 	struct list_head	link;		/* link in types list */
 	struct lock_class_key	lock_class;	/* key->sem lock class */
