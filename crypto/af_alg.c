@@ -260,6 +260,16 @@ static int alg_setsockopt(struct socket *sock, int level, int optname,
 
 		err = alg_setkey(sk, optval, optlen, type->setpubkey);
 		break;
+
+	case ALG_SET_KEY_ID:
+	case ALG_SET_PUBKEY_ID:
+		/* ALG_SET_KEY_ID is only for akcipher */
+		if (!strcmp(type->name, "akcipher") ||
+		    sock->state == SS_CONNECTED)
+			goto unlock;
+
+		err = alg_setkey(sk, optval, optlen, type->setkeyid);
+		break;
 	case ALG_SET_AEAD_AUTHSIZE:
 		if (sock->state == SS_CONNECTED)
 			goto unlock;
