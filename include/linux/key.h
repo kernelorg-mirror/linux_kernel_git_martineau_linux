@@ -204,6 +204,7 @@ struct key {
 			/* Keyring bits */
 			struct list_head name_link;
 			struct assoc_array keys;
+			struct key *restrict_key;
 		};
 		int reject_error;
 	};
