@@ -131,6 +131,12 @@ typedef int (*key_restrict_link_func_t)(struct key *dest_keyring,
 					const union key_payload *payload,
 					void *data);
 
+struct key_restriction {
+	key_restrict_link_func_t check;
+	void (*free_data)(void *data);
+	void *data;
+};
+
 /*****************************************************************************/
 /*
  * authentication token / access credential / keyring
