@@ -2519,14 +2519,46 @@ static int nl80211_send_iface(struct sk_buff *msg, u32 portid, u32 seq, int flag
 	return -EMSGSIZE;
 }
 
+static int nl80211_dump_interface_parse(struct sk_buff *skb,
+				    struct netlink_callback *cb,
+				    int *filter_wiphy)
+{
+	struct nlattr **tb = nl80211_fam.attrbuf;
+	int ret = nlmsg_parse(cb->nlh, GENL_HDRLEN + nl80211_fam.hdrsize,
+			      tb, nl80211_fam.maxattr, nl80211_policy);
+	/* ignore parse errors for backward compatibility */
+	if (ret)
+		return 0;
+
+	if (tb[NL80211_ATTR_WIPHY])
+		*filter_wiphy = nla_get_u32(tb[NL80211_ATTR_WIPHY]);
+	if (tb[NL80211_ATTR_WDEV])
+		*filter_wiphy = nla_get_u64(tb[NL80211_ATTR_WDEV]) >> 32;
+
+	return 0;
+}
+
 static int nl80211_dump_interface(struct sk_buff *skb, struct netlink_callback *cb)
 {
 	int wp_idx = 0;
 	int if_idx = 0;
 	int wp_start = cb->args[0];
 	int if_start = cb->args[1];
+	int filter_wiphy = cb->args[2];
 	struct cfg80211_registered_device *rdev;
 	struct wireless_dev *wdev;
+
+	if (!wp_start && !if_start && !filter_wiphy) {
+		int ret;
+
+		filter_wiphy = -1;
+
+		ret = nl80211_dump_interface_parse(skb, cb, &filter_wiphy);
+		if (ret)
+			return ret;
+
+		cb->args[2] = filter_wiphy;
+	}
 
 	rtnl_lock();
 	list_for_each_entry(rdev, &cfg80211_rdev_list, list) {
@@ -2536,6 +2568,10 @@ static int nl80211_dump_interface(struct sk_buff *skb, struct netlink_callback *
 			wp_idx++;
 			continue;
 		}
+
+		if (filter_wiphy != -1 && filter_wiphy != rdev->wiphy_idx)
+			continue;
+
 		if_idx = 0;
 
 		list_for_each_entry(wdev, &rdev->wiphy.wdev_list, list) {
