@@ -56,7 +56,8 @@ union key_payload;
 
 extern int restrict_link_by_signature(struct key *trust_keyring,
 				      const struct key_type *type,
-				      const union key_payload *payload);
+				      const union key_payload *payload,
+				      void *data);
 
 extern int query_asymmetric_key(const struct kernel_pkey_params *,
 				struct kernel_pkey_query *);
