@@ -126,9 +126,10 @@ static inline bool is_key_possessed(const key_ref_t key_ref)
 	return (unsigned long) key_ref & 1UL;
 }
 
-typedef int (*key_restrict_link_func_t)(struct key *keyring,
+typedef int (*key_restrict_link_func_t)(struct key *dest_keyring,
 					const struct key_type *type,
-					const union key_payload *payload);
+					const union key_payload *payload,
+					void *data);
 
 /*****************************************************************************/
 /*
@@ -308,7 +309,8 @@ extern struct key *keyring_alloc(const char *description, kuid_t uid, kgid_t gid
 
 extern int restrict_link_reject(struct key *keyring,
 				const struct key_type *type,
-				const union key_payload *payload);
+				const union key_payload *payload,
+				void *data);
 
 extern int keyring_clear(struct key *keyring);
 
