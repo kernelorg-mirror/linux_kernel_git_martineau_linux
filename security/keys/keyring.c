@@ -394,6 +394,15 @@ static void keyring_destroy(struct key *keyring)
 		write_unlock(&keyring_name_lock);
 	}
 
+	if (keyring->restrict_link) {
+		struct key_restriction *keyres = keyring->restrict_link;
+
+		if (keyres->free_data)
+			keyres->free_data(keyres->data);
+
+		kfree(keyres);
+	}
+
 	assoc_array_destroy(&keyring->keys, &keyring_assoc_array_ops);
 }
 
@@ -492,7 +501,7 @@ static long keyring_read(const struct key *keyring,
 struct key *keyring_alloc(const char *description, kuid_t uid, kgid_t gid,
 			  const struct cred *cred, key_perm_t perm,
 			  unsigned long flags,
-			  key_restrict_link_func_t restrict_link,
+			  struct key_restriction *restrict_link,
 			  struct key *dest)
 {
 	struct key *keyring;
@@ -523,8 +532,8 @@ EXPORT_SYMBOL(keyring_alloc);
  * passing KEY_ALLOC_BYPASS_RESTRICTION to key_instantiate_and_link() when
  * adding a key to a keyring.
  *
- * This is meant to be passed as the restrict_link parameter to
- * keyring_alloc().
+ * This is meant to be stored in a key_restriction structure which is passed
+ * in the restrict_link parameter to keyring_alloc().
  */
 int restrict_link_reject(struct key *keyring,
 			 const struct key_type *type,
@@ -1220,9 +1229,10 @@ void __key_link_end(struct key *keyring,
  */
 static int __key_link_check_restriction(struct key *keyring, struct key *key)
 {
-	if (!keyring->restrict_link)
+	if (!keyring->restrict_link || !keyring->restrict_link->check)
 		return 0;
-	return keyring->restrict_link(keyring, key->type, &key->payload, NULL);
+	return keyring->restrict_link->check(keyring, key->type, &key->payload,
+					     keyring->restrict_link->data);
 }
 
 /**
