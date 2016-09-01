@@ -14,6 +14,8 @@
 #ifndef _LINUX_PUBLIC_KEY_H
 #define _LINUX_PUBLIC_KEY_H
 
+#include <linux/keyctl.h>
+
 /*
  * Cryptographic data for the public-key subtype of the asymmetric key type.
  *
@@ -40,6 +42,7 @@ struct public_key_signature {
 	u8 digest_size;		/* Number of bytes in digest */
 	const char *pkey_algo;
 	const char *hash_algo;
+	const char *encoding;
 };
 
 extern void public_key_signature_free(struct public_key_signature *sig);
@@ -65,6 +68,15 @@ extern int restrict_link_by_key_or_keyring_chain(struct key *trust_keyring,
 						 const union key_payload *payload,
 						 struct key *trusted);
 
+extern int query_asymmetric_key(const struct kernel_pkey_params *params,
+				struct kernel_pkey_query *info);
+
+extern int encrypt_blob(struct kernel_pkey_params *params,
+			const void *data, void *enc);
+extern int decrypt_blob(struct kernel_pkey_params *params,
+			const void *enc, void *data);
+extern int create_signature(struct kernel_pkey_params *params,
+			    const void *data, void *enc);
 extern int verify_signature(const struct key *key,
 			    const struct public_key_signature *sig);
 
