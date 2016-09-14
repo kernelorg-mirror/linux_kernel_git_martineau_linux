@@ -672,8 +672,8 @@ error:
 /*
  * Find and lock the specified key type against removal.
  *
- * We return with the sem read-locked if successful.  If the type wasn't
- * available -ENOKEY is returned instead.
+ * We return with the key type's sem read-locked if successful.  If the
+ * type wasn't available -ENOKEY is returned instead.
  */
 struct key_type *key_type_lookup(const char *type)
 {
@@ -684,14 +684,18 @@ struct key_type *key_type_lookup(const char *type)
 	/* look up the key type to see if it's one of the registered kernel
 	 * types */
 	list_for_each_entry(ktype, &key_types_list, link) {
-		if (strcmp(ktype->name, type) == 0)
+		/* ktype->sem is only write locked when unregistering, so
+		 * ignore a key type with a contended lock.
+		 */
+		if ((strcmp(ktype->name, type) == 0) &&
+		    down_read_trylock(&ktype->sem))
 			goto found_kernel_type;
 	}
 
-	up_read(&key_types_sem);
 	ktype = ERR_PTR(-ENOKEY);
 
 found_kernel_type:
+	up_read(&key_types_sem);
 	return ktype;
 }
 
@@ -720,7 +724,8 @@ EXPORT_SYMBOL_GPL(key_set_timeout);
  */
 void key_type_put(struct key_type *ktype)
 {
-	up_read(&key_types_sem);
+	if (ktype)
+		up_read(&ktype->sem);
 }
 
 /*
@@ -1102,6 +1107,7 @@ int register_key_type(struct key_type *ktype)
 	int ret;
 
 	memset(&ktype->lock_class, 0, sizeof(ktype->lock_class));
+	init_rwsem(&ktype->sem);
 
 	ret = -EEXIST;
 	down_write(&key_types_sem);
@@ -1135,13 +1141,21 @@ EXPORT_SYMBOL(register_key_type);
 void unregister_key_type(struct key_type *ktype)
 {
 	down_write(&key_types_sem);
+	down_write(&ktype->sem);
 	list_del_init(&ktype->link);
 	downgrade_write(&key_types_sem);
 	key_gc_keytype(ktype);
 	pr_notice("Key type %s unregistered\n", ktype->name);
+	up_write(&ktype->sem);
 	up_read(&key_types_sem);
 }
 EXPORT_SYMBOL(unregister_key_type);
+
+static void __init add_special_key_type(struct key_type *ktype)
+{
+	init_rwsem(&ktype->sem);
+	list_add_tail(&ktype->link, &key_types_list);
+}
 
 /*
  * Initialise the key management state.
@@ -1153,10 +1167,10 @@ void __init key_init(void)
 			0, SLAB_HWCACHE_ALIGN|SLAB_PANIC, NULL);
 
 	/* add the special key types */
-	list_add_tail(&key_type_keyring.link, &key_types_list);
-	list_add_tail(&key_type_dead.link, &key_types_list);
-	list_add_tail(&key_type_user.link, &key_types_list);
-	list_add_tail(&key_type_logon.link, &key_types_list);
+	add_special_key_type(&key_type_keyring);
+	add_special_key_type(&key_type_dead);
+	add_special_key_type(&key_type_user);
+	add_special_key_type(&key_type_logon);
 
 	/* record the root user tracking */
 	rb_link_node(&root_key_user.node,

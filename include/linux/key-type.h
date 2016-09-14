@@ -150,6 +150,7 @@ struct key_type {
 	/* internal fields */
 	struct list_head	link;		/* link in types list */
 	struct lock_class_key	lock_class;	/* key->sem lock class */
+	struct rw_semaphore	sem;		/* for safe key type removal */
 };
 
 extern struct key_type key_type_keyring;
