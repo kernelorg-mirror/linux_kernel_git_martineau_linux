@@ -99,7 +99,7 @@ static void key_gc_timer_func(unsigned long data)
  * collect dead links and the third to clean up the dead keys.  We have to be
  * careful as there may already be a cycle in progress.
  *
- * The caller must be holding key_types_sem.
+ * The caller must be holding key_types_sem and ktype->sem.
  */
 void key_gc_keytype(struct key_type *ktype)
 {
