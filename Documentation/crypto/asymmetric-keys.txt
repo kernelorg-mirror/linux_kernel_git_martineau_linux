@@ -359,13 +359,20 @@ Several restriction methods are available:
  (3) Restrict using a separate key or keyring
 
      - Options used when creating the keyring:
-       - restrict=asymmetric:key_or_keyring:<key or keyring serial number>
+       - restrict=asymmetric:key_or_keyring:<key or keyring serial number>[:chain]
 
      Whenever a key link is requested, the link will only succeed if the key
      being linked is signed by one of the designated keys. This key may be
      specified directly by providing a serial number for one asymmetric key, or
      a group of keys may be searched for the signing key by providing the
      serial number for a keyring.
+
+     When the "chain" option is provided at the end of the string, the keys
+     within the destination keyring will also be searched for signing keys.
+     This allows for verification of certificate chains by adding each
+     cert in order (starting closest to the root) to one keyring. In addition,
+     using key serial number 0 with the "chain" option will assume the first
+     key added to the keyring is the root (its signature will not be checked).
 
 In all of these cases, if the signing key is found the signature of the key to
 be linked will be verified using the signing key.  The requested key is added
