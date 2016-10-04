@@ -60,6 +60,11 @@ extern int restrict_link_by_key_or_keyring(struct key *trust_keyring,
 					   const union key_payload *payload,
 					   void *data);
 
+extern int restrict_link_by_key_or_keyring_chain(struct key *trust_keyring,
+						 const struct key_type *type,
+						 const union key_payload *payload,
+						 void *data);
+
 extern int verify_signature(const struct key *key,
 			    const struct public_key_signature *sig);
 
