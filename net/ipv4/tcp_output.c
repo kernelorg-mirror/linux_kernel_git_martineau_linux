@@ -41,6 +41,7 @@
 #include <linux/compiler.h>
 #include <linux/gfp.h>
 #include <linux/module.h>
+#include <linux/static_key.h>
 
 /* People can turn this off for buggy TCP's found in printers etc. */
 int sysctl_tcp_retrans_collapse __read_mostly = 1;
@@ -413,23 +414,6 @@ static inline bool tcp_urg_mode(const struct tcp_sock *tp)
 	return tp->snd_una != tp->snd_up;
 }
 
-#define OPTION_SACK_ADVERTISE	(1 << 0)
-#define OPTION_TS		(1 << 1)
-#define OPTION_MD5		(1 << 2)
-#define OPTION_WSCALE		(1 << 3)
-#define OPTION_FAST_OPEN_COOKIE	(1 << 8)
-
-struct tcp_out_options {
-	u16 options;		/* bit field of OPTION_* */
-	u16 mss;		/* 0 to disable */
-	u8 ws;			/* window scale, 0 to disable */
-	u8 num_sack_blocks;	/* number of SACK blocks to include */
-	u8 hash_size;		/* bytes in hash_location */
-	__u8 *hash_location;	/* temporary pointer, overloaded */
-	__u32 tsval, tsecr;	/* need to include OPTION_TS */
-	struct tcp_fastopen_cookie *fastopen_cookie;	/* Fast open cookie */
-};
-
 /* Write previously computed TCP options to the packet.
  *
  * Beware: Something in the Internet is very sensitive to the ordering of
@@ -536,6 +520,9 @@ static void tcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 		}
 		ptr += (len + 3) >> 2;
 	}
+
+	if (static_branch_unlikely(&tcp_extra_options_enabled))
+		tcp_extra_options_write(ptr, opts, tcp_to_sk(tp));
 }
 
 /* Compute TCP options for SYN packets. This is not the final
@@ -603,6 +590,11 @@ static unsigned int tcp_syn_options(struct sock *sk, struct sk_buff *skb,
 		}
 	}
 
+	if (static_branch_unlikely(&tcp_extra_options_enabled))
+		remaining -= tcp_extra_options_prepare(skb, TCPHDR_SYN,
+						       remaining, opts,
+						       tcp_to_sk(tp));
+
 	return MAX_TCP_OPTION_SPACE - remaining;
 }
 
@@ -663,6 +655,12 @@ static unsigned int tcp_synack_options(struct request_sock *req,
 		}
 	}
 
+	if (static_branch_unlikely(&tcp_extra_options_enabled))
+		remaining -= tcp_extra_options_prepare(skb,
+						       TCPHDR_SYN | TCPHDR_ACK,
+						       remaining, opts,
+						       req_to_sk(req));
+
 	return MAX_TCP_OPTION_SPACE - remaining;
 }
 
@@ -695,6 +693,11 @@ static unsigned int tcp_established_options(struct sock *sk, struct sk_buff *skb
 		opts->tsecr = tp->rx_opt.ts_recent;
 		size += TCPOLEN_TSTAMP_ALIGNED;
 	}
+
+	if (static_branch_unlikely(&tcp_extra_options_enabled))
+		size += tcp_extra_options_prepare(skb, 0,
+						  MAX_TCP_OPTION_SPACE - size,
+						  opts, tcp_to_sk(tp));
 
 	eff_sacks = tp->rx_opt.num_sacks + tp->rx_opt.dsack;
 	if (unlikely(eff_sacks)) {
@@ -1016,6 +1019,7 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	tcb = TCP_SKB_CB(skb);
 	memset(&opts, 0, sizeof(opts));
 
+	rcu_read_lock();
 	if (unlikely(tcb->tcp_flags & TCPHDR_SYN))
 		tcp_options_size = tcp_syn_options(sk, skb, &opts, &md5);
 	else
@@ -1092,6 +1096,7 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 					       md5, sk, skb);
 	}
 #endif
+	rcu_read_unlock();
 
 	icsk->icsk_af_ops->send_check(sk, skb);
 
@@ -3156,8 +3161,8 @@ struct sk_buff *tcp_make_synack(const struct sock *sk, struct dst_entry *dst,
 #endif
 		skb->skb_mstamp = tcp_clock_us();
 
-#ifdef CONFIG_TCP_MD5SIG
 	rcu_read_lock();
+#ifdef CONFIG_TCP_MD5SIG
 	md5 = tcp_rsk(req)->af_specific->req_md5_lookup(sk, req_to_sk(req));
 #endif
 	skb_set_hash(skb, tcp_rsk(req)->txhash, PKT_HASH_TYPE_L4);
@@ -3196,8 +3201,8 @@ struct sk_buff *tcp_make_synack(const struct sock *sk, struct dst_entry *dst,
 	if (md5)
 		tcp_rsk(req)->af_specific->calc_md5_hash(opts.hash_location,
 					       md5, req_to_sk(req), skb);
-	rcu_read_unlock();
 #endif
+	rcu_read_unlock();
 
 	/* Do not fool tcpdump (if any), clean our debris */
 	skb->tstamp = 0;

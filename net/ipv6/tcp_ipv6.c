@@ -784,9 +784,10 @@ static void tcp_v6_send_response(const struct sock *sk, struct sk_buff *skb, u32
 	struct flowi6 fl6;
 	struct net *net = sk ? sock_net(sk) : dev_net(skb_dst(skb)->dev);
 	struct sock *ctl_sk = net->ipv6.tcp_sk;
-	unsigned int tot_len = sizeof(struct tcphdr);
+	unsigned int tot_len = 0;
 	struct dst_entry *dst;
 	__be32 *topt;
+	struct tcp_out_options extraopts;
 
 	if (tsecr)
 		tot_len += TCPOLEN_TSTAMP_ALIGNED;
@@ -795,10 +796,28 @@ static void tcp_v6_send_response(const struct sock *sk, struct sk_buff *skb, u32
 		tot_len += TCPOLEN_MD5SIG_ALIGNED;
 #endif
 
+	rcu_read_lock();
+	if (static_branch_unlikely(&tcp_extra_options_enabled)) {
+		unsigned int remaining = MAX_TCP_OPTION_SPACE - tot_len;
+		u8 extraflags = rst ? TCPHDR_RST : 0;
+
+		if (!rst || !th->ack)
+			extraflags |= TCPHDR_ACK;
+
+		memset(&extraopts, 0, sizeof(extraopts));
+
+		tot_len += tcp_extra_options_prepare(skb, extraflags, remaining,
+						     &extraopts, sk);
+	}
+
+	tot_len += sizeof(struct tcphdr);
+
 	buff = alloc_skb(MAX_HEADER + sizeof(struct ipv6hdr) + tot_len,
 			 GFP_ATOMIC);
-	if (!buff)
+	if (!buff) {
+		rcu_read_unlock();
 		return;
+	}
 
 	skb_reserve(buff, MAX_HEADER + sizeof(struct ipv6hdr) + tot_len);
 
@@ -834,6 +853,11 @@ static void tcp_v6_send_response(const struct sock *sk, struct sk_buff *skb, u32
 				    &ipv6_hdr(skb)->daddr, t1);
 	}
 #endif
+
+	if (static_branch_unlikely(&tcp_extra_options_enabled))
+		tcp_extra_options_write(topt, &extraopts, sk);
+
+	rcu_read_unlock();
 
 	memset(&fl6, 0, sizeof(fl6));
 	fl6.daddr = ipv6_hdr(skb)->saddr;

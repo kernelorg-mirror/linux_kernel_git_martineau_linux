@@ -433,7 +433,8 @@ int tcp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int nonblock,
 		int flags, int *addr_len);
 void tcp_parse_options(const struct net *net, const struct sk_buff *skb,
 		       struct tcp_options_received *opt_rx,
-		       int estab, struct tcp_fastopen_cookie *foc);
+		       int estab, struct tcp_fastopen_cookie *foc,
+		       struct tcp_sock *tp);
 const u8 *tcp_parse_md5sig_option(const struct tcphdr *th);
 
 /*
@@ -2109,4 +2110,41 @@ static inline bool tcp_bpf_ca_needs_ecn(struct sock *sk)
 {
 	return (tcp_call_bpf(sk, BPF_SOCK_OPS_NEEDS_ECN) == 1);
 }
+
+extern struct static_key_false tcp_extra_options_enabled;
+
+struct tcp_extra_option_ops {
+	struct list_head	list;
+	unsigned char		option_kind;
+	unsigned char		priority;
+	void (*parse)(int opsize, const unsigned char *opptr,
+		      const struct sk_buff *skb,
+		      struct tcp_options_received *opt_rx,
+		      struct sock *sk);
+	/* Return the number of bytes consumed */
+	unsigned int (*prepare)(struct sk_buff *skb, u8 flags,
+				unsigned int remaining,
+				struct tcp_out_options *opts,
+				const struct sock *sk);
+	void (*write)(__be32 *ptr, struct tcp_out_options *opts,
+		      const struct sock *sk);
+	struct module		*owner;
+};
+
+void tcp_extra_options_parse(int opcode, int opsize, const unsigned char *opptr,
+			     const struct sk_buff *skb,
+			     struct tcp_options_received *opt_rx,
+			     struct sock *sk);
+
+unsigned int tcp_extra_options_prepare(struct sk_buff *skb, u8 flags,
+				       unsigned int remaining,
+				       struct tcp_out_options *opts,
+				       const struct sock *sk);
+
+void tcp_extra_options_write(__be32 *ptr, struct tcp_out_options *opts,
+			     const struct sock *sk);
+
+int tcp_register_extra_option(struct tcp_extra_option_ops *ops);
+void tcp_unregister_extra_option(struct tcp_extra_option_ops *ops);
+
 #endif	/* _TCP_H */

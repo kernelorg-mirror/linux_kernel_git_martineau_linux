@@ -270,6 +270,7 @@
 #include <linux/time.h>
 #include <linux/slab.h>
 #include <linux/errqueue.h>
+#include <linux/static_key.h>
 
 #include <net/icmp.h>
 #include <net/inet_common.h>
@@ -305,6 +306,13 @@ EXPORT_SYMBOL(tcp_memory_allocated);
  */
 struct percpu_counter tcp_sockets_allocated;
 EXPORT_SYMBOL(tcp_sockets_allocated);
+
+/*
+ * Optional TCP option handlers
+ */
+static DEFINE_SPINLOCK(tcp_option_list_lock);
+static LIST_HEAD(tcp_option_list);
+DEFINE_STATIC_KEY_FALSE(tcp_extra_options_enabled);
 
 /*
  * TCP splice context
@@ -3375,6 +3383,130 @@ EXPORT_SYMBOL(tcp_md5_hash_key);
 
 #endif
 
+/* Linear search, few entries are expected. The RCU read lock must
+ * be held before calling.
+ */
+static struct tcp_extra_option_ops *tcp_extra_options_find_kind(unsigned char kind)
+{
+	struct tcp_extra_option_ops *entry;
+
+	list_for_each_entry_rcu(entry, &tcp_option_list, list) {
+		if (entry->option_kind == kind)
+			return entry;
+	}
+
+	return NULL;
+}
+
+void tcp_extra_options_parse(int opcode, int opsize, const unsigned char *opptr,
+			     const struct sk_buff *skb,
+			     struct tcp_options_received *opt_rx,
+			     struct sock *sk)
+{
+	struct tcp_extra_option_ops *entry;
+
+	rcu_read_lock();
+	entry = tcp_extra_options_find_kind(opcode);
+	if (entry && entry->parse)
+		entry->parse(opsize, opptr, skb, opt_rx, sk);
+	rcu_read_unlock();
+}
+EXPORT_SYMBOL_GPL(tcp_extra_options_parse);
+
+/* The RCU read lock must be held before calling, and should span both
+ * the call to this function and tcp_extra_options_write to ensure that
+ * tcp_option_list does not change between the two calls. To preserve
+ * expected option alignment, always returns a multiple of 4 bytes.
+ */
+unsigned int tcp_extra_options_prepare(struct sk_buff *skb, u8 flags,
+				       unsigned int remaining,
+				       struct tcp_out_options *opts,
+				       const struct sock *sk)
+{
+	struct tcp_extra_option_ops *entry;
+	unsigned int used = 0;
+
+	list_for_each_entry_rcu(entry, &tcp_option_list, list) {
+		if (unlikely(!entry->prepare))
+			continue;
+
+		used += entry->prepare(skb, flags, remaining - used, opts, sk);
+	}
+
+	return roundup(used, 4);
+}
+EXPORT_SYMBOL_GPL(tcp_extra_options_prepare);
+
+/* The RCU read lock must be held before calling, and should span both
+ * the call to tcp_extra_options_write and this function to ensure that
+ * tcp_option_list does not change between the two calls.
+ */
+void tcp_extra_options_write(__be32 *ptr, struct tcp_out_options *opts,
+			     const struct sock *sk)
+{
+	struct tcp_extra_option_ops *entry;
+
+	list_for_each_entry_rcu(entry, &tcp_option_list, list) {
+		if (unlikely(!entry->write))
+			continue;
+
+		entry->write(ptr, opts, sk);
+	}
+}
+EXPORT_SYMBOL_GPL(tcp_extra_options_write);
+
+int tcp_register_extra_option(struct tcp_extra_option_ops *ops)
+{
+	struct tcp_extra_option_ops *entry;
+	struct list_head* add_before = &tcp_option_list;
+	int ret = 0;
+
+	if (!ops->option_kind)
+		return -EINVAL;
+
+	if (!try_module_get(ops->owner))
+		return -ENOENT;
+
+	spin_lock(&tcp_option_list_lock);
+
+	list_for_each_entry_rcu(entry, &tcp_option_list, list) {
+		if (entry->option_kind == ops->option_kind) {
+			pr_notice("Option kind %u already registered\n",
+				  ops->option_kind);
+			spin_unlock(&tcp_option_list_lock);
+			module_put(ops->owner);
+			return -EEXIST;
+		}
+
+		if (entry->priority <= ops->priority)
+			add_before = &entry->list;
+	}
+
+	list_add_tail_rcu(&ops->list, add_before);
+	pr_debug("Option kind %u registered\n", ops->option_kind);
+
+	spin_unlock(&tcp_option_list_lock);
+
+	static_branch_inc(&tcp_extra_options_enabled);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(tcp_register_extra_option);
+
+void tcp_unregister_extra_option(struct tcp_extra_option_ops *ops)
+{
+	spin_lock(&tcp_option_list_lock);
+	list_del_rcu(&ops->list);
+	spin_unlock(&tcp_option_list_lock);
+
+	synchronize_net();
+
+	static_branch_dec(&tcp_extra_options_enabled);
+
+	module_put(ops->owner);
+}
+EXPORT_SYMBOL_GPL(tcp_unregister_extra_option);
+
 void tcp_done(struct sock *sk)
 {
 	struct request_sock *req = tcp_sk(sk)->fastopen_rsk;
@@ -3521,6 +3653,7 @@ void __init tcp_init(void)
 		INIT_HLIST_HEAD(&tcp_hashinfo.bhash[i].chain);
 	}
 
+	INIT_LIST_HEAD(&tcp_option_list);
 
 	cnt = tcp_hashinfo.ehash_mask + 1;
 	sysctl_tcp_max_orphans = cnt / 2;
