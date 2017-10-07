@@ -166,6 +166,8 @@ out:
  *		instead of head cache and allocate a cloned (child) skb.
  *		If SKB_ALLOC_RX is set, __GFP_MEMALLOC will be used for
  *		allocations in case the data is required for writeback
+ *		If SKB_ALLOC_SHINFO_EXT is set, the skb will be allocated
+ *		with an extended shared info struct.
  *	@node: numa node to allocate memory on
  *
  *	Allocate a new &sk_buff. The returned buffer has no headroom and a
@@ -179,9 +181,9 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 			    int flags, int node)
 {
 	struct kmem_cache *cache;
-	struct skb_shared_info *shinfo;
 	struct sk_buff *skb;
 	u8 *data;
+	unsigned int shinfo_size;
 	bool pfmemalloc;
 
 	cache = (flags & SKB_ALLOC_FCLONE)
@@ -199,18 +201,22 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 	/* We do our best to align skb_shared_info on a separate cache
 	 * line. It usually works because kmalloc(X > SMP_CACHE_BYTES) gives
 	 * aligned memory blocks, unless SLUB/SLAB debug is enabled.
-	 * Both skb->head and skb_shared_info are cache line aligned.
+	 * Both skb->head and skb_shared_info (or skb_shared_info_ext) are
+	 * cache line aligned.
 	 */
 	size = SKB_DATA_ALIGN(size);
-	size += SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
-	data = kmalloc_reserve(size, gfp_mask, node, &pfmemalloc);
+	if (flags & SKB_ALLOC_SHINFO_EXT)
+		shinfo_size = SKB_DATA_ALIGN(sizeof(struct skb_shared_info_ext));
+	else
+		shinfo_size = SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+	data = kmalloc_reserve(size + shinfo_size, gfp_mask, node, &pfmemalloc);
 	if (!data)
 		goto nodata;
 	/* kmalloc(size) might give us more room than requested.
 	 * Put skb_shared_info exactly at the end of allocated zone,
 	 * to allow max possible filling before reallocation.
 	 */
-	size = SKB_WITH_OVERHEAD(ksize(data));
+	size = ksize(data) - shinfo_size;
 	prefetchw(data + size);
 
 	/*
@@ -220,7 +226,10 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 	 */
 	memset(skb, 0, offsetof(struct sk_buff, tail));
 	/* Account for allocated memory : skb + skb->head */
-	skb->truesize = SKB_TRUESIZE(size);
+	if (flags & SKB_ALLOC_SHINFO_EXT)
+		skb->truesize = SKB_TRUESIZE(size) + SKB_SHINFO_EXT_OVERHEAD;
+	else
+		skb->truesize = SKB_TRUESIZE(size);
 	skb->pfmemalloc = pfmemalloc;
 	refcount_set(&skb->users, 1);
 	skb->head = data;
@@ -231,10 +240,21 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 	skb->transport_header = (typeof(skb->transport_header))~0U;
 
 	/* make sure we initialize shinfo sequentially */
-	shinfo = skb_shinfo(skb);
-	memset(shinfo, 0, offsetof(struct skb_shared_info, dataref));
-	atomic_set(&shinfo->dataref, 1);
-	kmemcheck_annotate_variable(shinfo->destructor_arg);
+	if (flags & SKB_ALLOC_SHINFO_EXT) {
+		struct skb_shared_info_ext *shinfo_ext = skb_shinfo_ext(skb);
+		shinfo_ext->shinfo.is_ext = 1;
+		memset(&shinfo_ext->shinfo.meta_len, 0,
+		       offsetof(struct skb_shared_info, dataref) -
+		       offsetof(struct skb_shared_info, meta_len));
+		atomic_set(&shinfo_ext->shinfo.dataref, 1);
+		kmemcheck_annotate_variable(shinfo_ext->shinfo.destructor_arg);
+		memset(&shinfo_ext->shcb, 0, sizeof(shinfo_ext->shcb));
+	} else {
+		struct skb_shared_info *shinfo = skb_shinfo(skb);
+		memset(shinfo, 0, offsetof(struct skb_shared_info, dataref));
+		atomic_set(&shinfo->dataref, 1);
+		kmemcheck_annotate_variable(shinfo->destructor_arg);
+	}
 
 	if (flags & SKB_ALLOC_FCLONE) {
 		struct sk_buff_fclones *fclones;
@@ -1443,6 +1463,7 @@ int pskb_expand_head(struct sk_buff *skb, int nhead, int ntail,
 {
 	int i, osize = skb_end_offset(skb);
 	int size = osize + nhead + ntail;
+	int shinfo_size;
 	long off;
 	u8 *data;
 
@@ -1454,11 +1475,14 @@ int pskb_expand_head(struct sk_buff *skb, int nhead, int ntail,
 
 	if (skb_pfmemalloc(skb))
 		gfp_mask |= __GFP_MEMALLOC;
-	data = kmalloc_reserve(size + SKB_DATA_ALIGN(sizeof(struct skb_shared_info)),
-			       gfp_mask, NUMA_NO_NODE, NULL);
+	if (skb_shinfo(skb)->is_ext)
+		shinfo_size = SKB_DATA_ALIGN(sizeof(struct skb_shared_info_ext));
+	else
+		shinfo_size = SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+	data = kmalloc_reserve(size + shinfo_size, gfp_mask, NUMA_NO_NODE, NULL);
 	if (!data)
 		goto nodata;
-	size = SKB_WITH_OVERHEAD(ksize(data));
+	size = ksize(data) - shinfo_size;
 
 	/* Copy only real data... and, alas, header. This should be
 	 * optimized for the cases when header is void.
@@ -1468,6 +1492,12 @@ int pskb_expand_head(struct sk_buff *skb, int nhead, int ntail,
 	memcpy((struct skb_shared_info *)(data + size),
 	       skb_shinfo(skb),
 	       offsetof(struct skb_shared_info, frags[skb_shinfo(skb)->nr_frags]));
+	if (skb_shinfo(skb)->is_ext) {
+		int offset = offsetof(struct skb_shared_info_ext, shcb);
+		memcpy((struct skb_shared_info_ext *)(data + size + offset),
+		       &skb_shinfo_ext(skb)->shcb,
+		       sizeof(skb_shinfo_ext(skb)->shcb));
+	}
 
 	/*
 	 * if shinfo is shared we must drop the old head gracefully, but if it

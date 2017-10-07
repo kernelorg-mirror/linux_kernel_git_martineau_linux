@@ -489,7 +489,8 @@ int skb_zerocopy_iter_stream(struct sock *sk, struct sk_buff *skb,
  * the end of the header data, ie. at skb->end.
  */
 struct skb_shared_info {
-	__u8		__unused;
+	__u8		is_ext:1,
+			__unused:7;
 	__u8		meta_len;
 	__u8		nr_frags;
 	__u8		tx_flags;
@@ -529,6 +530,24 @@ struct skb_shared_info {
 #define SKB_DATAREF_SHIFT 16
 #define SKB_DATAREF_MASK ((1 << SKB_DATAREF_SHIFT) - 1)
 
+
+/* This is an extended version of skb_shared_info, also invariant across
+ * clones and living at the end of the header data.
+ */
+struct skb_shared_info_ext {
+	/* skb_shared_info must be the first member */
+	struct skb_shared_info	shinfo;
+
+	/* This is the shared control buffer. It is similar to sk_buff's
+	 * control buffer, but is shared across clones. It must not be
+	 * modified when multiple sk_buffs are referencing this structure.
+	 */
+	char			shcb[48];
+};
+
+#define SKB_SHINFO_EXT_OVERHEAD	\
+	(SKB_DATA_ALIGN(sizeof(struct skb_shared_info_ext)) - \
+	 SKB_DATA_ALIGN(sizeof(struct skb_shared_info)))
 
 enum {
 	SKB_FCLONE_UNAVAILABLE,	/* skb has no fclone (from head_cache) */
@@ -856,6 +875,7 @@ struct sk_buff {
 #define SKB_ALLOC_FCLONE	0x01
 #define SKB_ALLOC_RX		0x02
 #define SKB_ALLOC_NAPI		0x04
+#define SKB_ALLOC_SHINFO_EXT	0x08
 
 /* Returns true if the skb was allocated from PFMEMALLOC reserves */
 static inline bool skb_pfmemalloc(const struct sk_buff *skb)
@@ -1271,6 +1291,8 @@ static inline unsigned int skb_end_offset(const struct sk_buff *skb)
 
 /* Internal */
 #define skb_shinfo(SKB)	((struct skb_shared_info *)(skb_end_pointer(SKB)))
+#define skb_shinfo_ext(SKB)	\
+	((struct skb_shared_info_ext *)(skb_end_pointer(SKB)))
 
 static inline struct skb_shared_hwtstamps *skb_hwtstamps(struct sk_buff *skb)
 {
