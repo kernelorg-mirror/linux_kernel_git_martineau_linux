@@ -355,7 +355,7 @@ int tcp_sendpage(struct sock *sk, struct page *page, int offset, size_t size,
 int tcp_sendpage_locked(struct sock *sk, struct page *page, int offset,
 			size_t size, int flags);
 ssize_t do_tcp_sendpages(struct sock *sk, struct page *page, int offset,
-		 size_t size, int flags);
+			 size_t size, int flags, struct sk_buff *first_skb);
 void tcp_release_cb(struct sock *sk);
 void tcp_wfree(struct sk_buff *skb);
 void tcp_write_timer_handler(struct sock *sk);

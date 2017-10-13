@@ -931,7 +931,7 @@ static int tcp_send_mss(struct sock *sk, int *size_goal, int flags)
 }
 
 ssize_t do_tcp_sendpages(struct sock *sk, struct page *page, int offset,
-			 size_t size, int flags)
+			 size_t size, int flags, struct sk_buff *first_skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	int mss_now, size_goal;
@@ -964,7 +964,13 @@ ssize_t do_tcp_sendpages(struct sock *sk, struct page *page, int offset,
 		int copy, i;
 		bool can_coalesce;
 
-		if (!skb || (copy = size_goal - skb->len) <= 0 ||
+		if (first_skb) {
+			skb = first_skb;
+			first_skb = NULL;
+
+			skb_entail(sk, skb);
+			copy = size_goal;
+		} else if (!skb || (copy = size_goal - skb->len) <= 0 ||
 		    !tcp_skb_can_collapse_to(skb)) {
 new_segment:
 			if (!sk_stream_memory_free(sk))
@@ -1072,7 +1078,7 @@ int tcp_sendpage_locked(struct sock *sk, struct page *page, int offset,
 
 	tcp_rate_check_app_limited(sk);  /* is sending application-limited? */
 
-	return do_tcp_sendpages(sk, page, offset, size, flags);
+	return do_tcp_sendpages(sk, page, offset, size, flags, NULL);
 }
 EXPORT_SYMBOL_GPL(tcp_sendpage_locked);
 
