@@ -1,7 +1,7 @@
 /*
  * Broadcom GENET MDIO routines
  *
- * Copyright (c) 2014 Broadcom Corporation
+ * Copyright (c) 2014-2017 Broadcom
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -86,7 +86,7 @@ static int bcmgenet_mii_write(struct mii_bus *bus, int phy_id,
 void bcmgenet_mii_setup(struct net_device *dev)
 {
 	struct bcmgenet_priv *priv = netdev_priv(dev);
-	struct phy_device *phydev = dev->phydev;
+	struct phy_device *phydev = priv->phydev;
 	u32 reg, cmd_bits = 0;
 	bool status_changed = false;
 
@@ -183,9 +183,9 @@ void bcmgenet_mii_reset(struct net_device *dev)
 	if (GENET_IS_V4(priv))
 		return;
 
-	if (dev->phydev) {
-		phy_init_hw(dev->phydev);
-		phy_start_aneg(dev->phydev);
+	if (priv->phydev) {
+		phy_init_hw(priv->phydev);
+		phy_start_aneg(priv->phydev);
 	}
 }
 
@@ -195,64 +195,53 @@ void bcmgenet_phy_power_set(struct net_device *dev, bool enable)
 	u32 reg = 0;
 
 	/* EXT_GPHY_CTRL is only valid for GENETv4 and onward */
-	if (!GENET_IS_V4(priv))
-		return;
+	if (GENET_IS_V4(priv)) {
+		reg = bcmgenet_ext_readl(priv, EXT_GPHY_CTRL);
+		if (enable) {
+			reg &= ~EXT_CK25_DIS;
+			bcmgenet_ext_writel(priv, reg, EXT_GPHY_CTRL);
+			mdelay(1);
 
-	reg = bcmgenet_ext_readl(priv, EXT_GPHY_CTRL);
-	if (enable) {
-		reg &= ~EXT_CK25_DIS;
+			reg &= ~(EXT_CFG_IDDQ_BIAS | EXT_CFG_PWR_DOWN);
+			reg |= EXT_GPHY_RESET;
+			bcmgenet_ext_writel(priv, reg, EXT_GPHY_CTRL);
+			mdelay(1);
+
+			reg &= ~EXT_GPHY_RESET;
+		} else {
+			reg |= EXT_CFG_IDDQ_BIAS | EXT_CFG_PWR_DOWN |
+			       EXT_GPHY_RESET;
+			bcmgenet_ext_writel(priv, reg, EXT_GPHY_CTRL);
+			mdelay(1);
+			reg |= EXT_CK25_DIS;
+		}
 		bcmgenet_ext_writel(priv, reg, EXT_GPHY_CTRL);
-		mdelay(1);
-
-		reg &= ~(EXT_CFG_IDDQ_BIAS | EXT_CFG_PWR_DOWN);
-		reg |= EXT_GPHY_RESET;
-		bcmgenet_ext_writel(priv, reg, EXT_GPHY_CTRL);
-		mdelay(1);
-
-		reg &= ~EXT_GPHY_RESET;
+		udelay(60);
 	} else {
-		reg |= EXT_CFG_IDDQ_BIAS | EXT_CFG_PWR_DOWN | EXT_GPHY_RESET;
-		bcmgenet_ext_writel(priv, reg, EXT_GPHY_CTRL);
 		mdelay(1);
-		reg |= EXT_CK25_DIS;
 	}
-	bcmgenet_ext_writel(priv, reg, EXT_GPHY_CTRL);
-	udelay(60);
-}
-
-static void bcmgenet_internal_phy_setup(struct net_device *dev)
-{
-	struct bcmgenet_priv *priv = netdev_priv(dev);
-	u32 reg;
-
-	/* Power up PHY */
-	bcmgenet_phy_power_set(dev, true);
-	/* enable APD */
-	reg = bcmgenet_ext_readl(priv, EXT_EXT_PWR_MGMT);
-	reg |= EXT_PWR_DN_EN_LD;
-	bcmgenet_ext_writel(priv, reg, EXT_EXT_PWR_MGMT);
-	bcmgenet_mii_reset(dev);
 }
 
 static void bcmgenet_moca_phy_setup(struct bcmgenet_priv *priv)
 {
-	struct net_device *ndev = priv->dev;
 	u32 reg;
 
-	/* Speed settings are set in bcmgenet_mii_setup() */
-	reg = bcmgenet_sys_readl(priv, SYS_PORT_CTRL);
-	reg |= LED_ACT_SOURCE_MAC;
-	bcmgenet_sys_writel(priv, reg, SYS_PORT_CTRL);
+	if (!GENET_IS_V5(priv)) {
+		/* Speed settings are set in bcmgenet_mii_setup() */
+		reg = bcmgenet_sys_readl(priv, SYS_PORT_CTRL);
+		reg |= LED_ACT_SOURCE_MAC;
+		bcmgenet_sys_writel(priv, reg, SYS_PORT_CTRL);
+	}
 
 	if (priv->hw_params->flags & GENET_HAS_MOCA_LINK_DET)
-		fixed_phy_set_link_update(ndev->phydev,
+		fixed_phy_set_link_update(priv->phydev,
 					  bcmgenet_fixed_phy_link_update);
 }
 
-int bcmgenet_mii_config(struct net_device *dev)
+int bcmgenet_mii_config(struct net_device *dev, bool init)
 {
 	struct bcmgenet_priv *priv = netdev_priv(dev);
-	struct phy_device *phydev = dev->phydev;
+	struct phy_device *phydev = priv->phydev;
 	struct device *kdev = &priv->pdev->dev;
 	const char *phy_name = NULL;
 	u32 id_mode_dis = 0;
@@ -262,11 +251,8 @@ int bcmgenet_mii_config(struct net_device *dev)
 	priv->ext_phy = !priv->internal_phy &&
 			(priv->phy_interface != PHY_INTERFACE_MODE_MOCA);
 
-	if (priv->internal_phy)
-		priv->phy_interface = PHY_INTERFACE_MODE_NA;
-
 	switch (priv->phy_interface) {
-	case PHY_INTERFACE_MODE_NA:
+	case PHY_INTERFACE_MODE_INTERNAL:
 	case PHY_INTERFACE_MODE_MOCA:
 		/* Irrespective of the actually configured PHY speed (100 or
 		 * 1000) GENETv4 only has an internal GPHY so we will just end
@@ -282,7 +268,6 @@ int bcmgenet_mii_config(struct net_device *dev)
 
 		if (priv->internal_phy) {
 			phy_name = "internal PHY";
-			bcmgenet_internal_phy_setup(dev);
 		} else if (priv->phy_interface == PHY_INTERFACE_MODE_MOCA) {
 			phy_name = "MoCA";
 			bcmgenet_moca_phy_setup(priv);
@@ -303,7 +288,7 @@ int bcmgenet_mii_config(struct net_device *dev)
 		 * capabilities, use that knowledge to also configure the
 		 * Reverse MII interface correctly.
 		 */
-		if ((phydev->supported & PHY_BASIC_FEATURES) ==
+		if ((priv->phydev->supported & PHY_BASIC_FEATURES) ==
 				PHY_BASIC_FEATURES)
 			port_ctrl = PORT_MODE_EXT_RVMII_25;
 		else
@@ -342,7 +327,8 @@ int bcmgenet_mii_config(struct net_device *dev)
 		bcmgenet_ext_writel(priv, reg, EXT_RGMII_OOB_CTRL);
 	}
 
-	dev_info_once(kdev, "configuring instance for %s\n", phy_name);
+	if (init)
+		dev_info(kdev, "configuring instance for %s\n", phy_name);
 
 	return 0;
 }
@@ -372,7 +358,7 @@ int bcmgenet_mii_probe(struct net_device *dev)
 			return -ENODEV;
 		}
 	} else {
-		phydev = dev->phydev;
+		phydev = priv->phydev;
 		phydev->dev_flags = phy_flags;
 
 		ret = phy_connect_direct(dev, phydev, bcmgenet_mii_setup,
@@ -383,14 +369,16 @@ int bcmgenet_mii_probe(struct net_device *dev)
 		}
 	}
 
+	priv->phydev = phydev;
+
 	/* Configure port multiplexer based on what the probed PHY device since
 	 * reading the 'max-speed' property determines the maximum supported
 	 * PHY speed which is needed for bcmgenet_mii_config() to configure
 	 * things appropriately.
 	 */
-	ret = bcmgenet_mii_config(dev);
+	ret = bcmgenet_mii_config(dev, true);
 	if (ret) {
-		phy_disconnect(phydev);
+		phy_disconnect(priv->phydev);
 		return ret;
 	}
 
@@ -400,7 +388,7 @@ int bcmgenet_mii_probe(struct net_device *dev)
 	 * Ethernet MAC ISRs
 	 */
 	if (priv->internal_phy)
-		phydev->irq = PHY_IGNORE_INTERRUPT;
+		priv->phydev->irq = PHY_IGNORE_INTERRUPT;
 
 	return 0;
 }
@@ -481,7 +469,6 @@ static int bcmgenet_mii_of_init(struct bcmgenet_priv *priv)
 {
 	struct device_node *dn = priv->pdev->dev.of_node;
 	struct device *kdev = &priv->pdev->dev;
-	const char *phy_mode_str = NULL;
 	struct phy_device *phydev = NULL;
 	char *compat;
 	int phy_mode;
@@ -520,29 +507,27 @@ static int bcmgenet_mii_of_init(struct bcmgenet_priv *priv)
 
 	/* Get the link mode */
 	phy_mode = of_get_phy_mode(dn);
+	if (phy_mode < 0) {
+		dev_err(kdev, "invalid PHY mode property\n");
+		return phy_mode;
+	}
+
 	priv->phy_interface = phy_mode;
 
 	/* We need to specifically look up whether this PHY interface is internal
 	 * or not *before* we even try to probe the PHY driver over MDIO as we
 	 * may have shut down the internal PHY for power saving purposes.
 	 */
-	if (phy_mode < 0) {
-		ret = of_property_read_string(dn, "phy-mode", &phy_mode_str);
-		if (ret < 0) {
-			dev_err(kdev, "invalid PHY mode property\n");
-			return ret;
-		}
-
-		priv->phy_interface = PHY_INTERFACE_MODE_NA;
-		if (!strcasecmp(phy_mode_str, "internal"))
-			priv->internal_phy = true;
-	}
+	if (priv->phy_interface == PHY_INTERFACE_MODE_INTERNAL)
+		priv->internal_phy = true;
 
 	/* Make sure we initialize MoCA PHYs with a link down */
 	if (phy_mode == PHY_INTERFACE_MODE_MOCA) {
 		phydev = of_phy_find_device(dn);
-		if (phydev)
+		if (phydev) {
 			phydev->link = 0;
+			put_device(&phydev->mdio.dev);
+		}
 	}
 
 	return 0;
@@ -605,6 +590,7 @@ static int bcmgenet_mii_pd_init(struct bcmgenet_priv *priv)
 
 	}
 
+	priv->phydev = phydev;
 	priv->phy_interface = pd->phy_interface;
 
 	return 0;
@@ -623,6 +609,7 @@ static int bcmgenet_mii_bus_init(struct bcmgenet_priv *priv)
 int bcmgenet_mii_init(struct net_device *dev)
 {
 	struct bcmgenet_priv *priv = netdev_priv(dev);
+	struct device_node *dn = priv->pdev->dev.of_node;
 	int ret;
 
 	ret = bcmgenet_mii_alloc(priv);
@@ -636,6 +623,8 @@ int bcmgenet_mii_init(struct net_device *dev)
 	return 0;
 
 out:
+	if (of_phy_is_fixed_link(dn))
+		of_phy_deregister_fixed_link(dn);
 	of_node_put(priv->phy_dn);
 	mdiobus_unregister(priv->mii_bus);
 	mdiobus_free(priv->mii_bus);
@@ -645,7 +634,10 @@ out:
 void bcmgenet_mii_exit(struct net_device *dev)
 {
 	struct bcmgenet_priv *priv = netdev_priv(dev);
+	struct device_node *dn = priv->pdev->dev.of_node;
 
+	if (of_phy_is_fixed_link(dn))
+		of_phy_deregister_fixed_link(dn);
 	of_node_put(priv->phy_dn);
 	mdiobus_unregister(priv->mii_bus);
 	mdiobus_free(priv->mii_bus);

@@ -7,7 +7,7 @@
  *
  * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
  * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
- * Copyright(c) 2016        Intel Deutschland GmbH
+ * Copyright(c) 2016 - 2017 Intel Deutschland GmbH
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -34,7 +34,7 @@
  *
  * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
  * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
- * Copyright(c) 2016        Intel Deutschland GmbH
+ * Copyright(c) 2016 - 2017 Intel Deutschland GmbH
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -66,7 +66,6 @@
  *****************************************************************************/
 #include <linux/firmware.h>
 #include <linux/rtnetlink.h>
-#include <linux/acpi.h>
 #include "iwl-trans.h"
 #include "iwl-csr.h"
 #include "mvm.h"
@@ -78,7 +77,7 @@
 /* Default NVM size to read */
 #define IWL_NVM_DEFAULT_CHUNK_SIZE (2*1024)
 #define IWL_MAX_NVM_SECTION_SIZE	0x1b58
-#define IWL_MAX_NVM_8000_SECTION_SIZE	0x1ffc
+#define IWL_MAX_EXT_NVM_SECTION_SIZE	0x1ffc
 
 #define NVM_WRITE_OPCODE 1
 #define NVM_READ_OPCODE 0
@@ -119,10 +118,6 @@ static int iwl_nvm_write_chunk(struct iwl_mvm *mvm, u16 section,
 		return ret;
 
 	pkt = cmd.resp_pkt;
-	if (!pkt) {
-		IWL_ERR(mvm, "Error in NVM_ACCESS response\n");
-		return -EINVAL;
-	}
 	/* Extract & check NVM write response */
 	nvm_resp = (void *)pkt->data;
 	if (le16_to_cpu(nvm_resp->status) != READ_NVM_CHUNK_SUCCEED) {
@@ -301,7 +296,7 @@ iwl_parse_nvm_sections(struct iwl_mvm *mvm)
 	bool lar_enabled;
 
 	/* Checking for required sections */
-	if (mvm->trans->cfg->device_family != IWL_DEVICE_FAMILY_8000) {
+	if (!mvm->trans->cfg->ext_nvm) {
 		if (!mvm->nvm_sections[NVM_SECTION_TYPE_SW].data ||
 		    !mvm->nvm_sections[mvm->cfg->nvm_hw_section_num].data) {
 			IWL_ERR(mvm, "Can't parse empty OTP/NVM sections\n");
@@ -375,7 +370,7 @@ iwl_parse_nvm_sections(struct iwl_mvm *mvm)
  *
  * 4. save as "iNVM_xxx.bin" under /lib/firmware
  */
-static int iwl_mvm_read_external_nvm(struct iwl_mvm *mvm)
+int iwl_mvm_read_external_nvm(struct iwl_mvm *mvm)
 {
 	int ret, section_size;
 	u16 section_id;
@@ -392,19 +387,19 @@ static int iwl_mvm_read_external_nvm(struct iwl_mvm *mvm)
 
 #define NVM_WORD1_LEN(x) (8 * (x & 0x03FF))
 #define NVM_WORD2_ID(x) (x >> 12)
-#define NVM_WORD2_LEN_FAMILY_8000(x) (2 * ((x & 0xFF) << 8 | x >> 8))
-#define NVM_WORD1_ID_FAMILY_8000(x) (x >> 4)
+#define EXT_NVM_WORD2_LEN(x) (2 * (((x) & 0xFF) << 8 | (x) >> 8))
+#define EXT_NVM_WORD1_ID(x) ((x) >> 4)
 #define NVM_HEADER_0	(0x2A504C54)
 #define NVM_HEADER_1	(0x4E564D2A)
 #define NVM_HEADER_SIZE	(4 * sizeof(u32))
 
 	IWL_DEBUG_EEPROM(mvm->trans->dev, "Read from external NVM\n");
 
-	/* Maximal size depends on HW family and step */
-	if (mvm->trans->cfg->device_family != IWL_DEVICE_FAMILY_8000)
+	/* Maximal size depends on NVM version */
+	if (!mvm->trans->cfg->ext_nvm)
 		max_section_size = IWL_MAX_NVM_SECTION_SIZE;
 	else
-		max_section_size = IWL_MAX_NVM_8000_SECTION_SIZE;
+		max_section_size = IWL_MAX_EXT_NVM_SECTION_SIZE;
 
 	/*
 	 * Obtain NVM image via request_firmware. Since we already used
@@ -448,10 +443,9 @@ static int iwl_mvm_read_external_nvm(struct iwl_mvm *mvm)
 			 le32_to_cpu(dword_buff[3]));
 
 		/* nvm file validation, dword_buff[2] holds the file version */
-		if ((CSR_HW_REV_STEP(mvm->trans->hw_rev) == SILICON_C_STEP &&
-		     le32_to_cpu(dword_buff[2]) < 0xE4A) ||
-		    (CSR_HW_REV_STEP(mvm->trans->hw_rev) == SILICON_B_STEP &&
-		     le32_to_cpu(dword_buff[2]) >= 0xE4A)) {
+		if (mvm->trans->cfg->device_family == IWL_DEVICE_FAMILY_8000 &&
+		    CSR_HW_REV_STEP(mvm->trans->hw_rev) == SILICON_C_STEP &&
+		    le32_to_cpu(dword_buff[2]) < 0xE4A) {
 			ret = -EFAULT;
 			goto out;
 		}
@@ -473,14 +467,14 @@ static int iwl_mvm_read_external_nvm(struct iwl_mvm *mvm)
 			break;
 		}
 
-		if (mvm->trans->cfg->device_family != IWL_DEVICE_FAMILY_8000) {
+		if (!mvm->trans->cfg->ext_nvm) {
 			section_size =
 				2 * NVM_WORD1_LEN(le16_to_cpu(file_sec->word1));
 			section_id = NVM_WORD2_ID(le16_to_cpu(file_sec->word2));
 		} else {
-			section_size = 2 * NVM_WORD2_LEN_FAMILY_8000(
+			section_size = 2 * EXT_NVM_WORD2_LEN(
 						le16_to_cpu(file_sec->word2));
-			section_id = NVM_WORD1_ID_FAMILY_8000(
+			section_id = EXT_NVM_WORD1_ID(
 						le16_to_cpu(file_sec->word1));
 		}
 
@@ -552,12 +546,106 @@ int iwl_mvm_load_nvm_to_nic(struct iwl_mvm *mvm)
 	return ret;
 }
 
+int iwl_mvm_nvm_get_from_fw(struct iwl_mvm *mvm)
+{
+	struct iwl_nvm_get_info cmd = {};
+	struct iwl_nvm_get_info_rsp *rsp;
+	struct iwl_trans *trans = mvm->trans;
+	struct iwl_host_cmd hcmd = {
+		.flags = CMD_WANT_SKB | CMD_SEND_IN_RFKILL,
+		.data = { &cmd, },
+		.len = { sizeof(cmd) },
+		.id = WIDE_ID(REGULATORY_AND_NVM_GROUP, NVM_GET_INFO)
+	};
+	int  ret;
+	bool lar_fw_supported = !iwlwifi_mod_params.lar_disable &&
+				fw_has_capa(&mvm->fw->ucode_capa,
+					    IWL_UCODE_TLV_CAPA_LAR_SUPPORT);
+
+	lockdep_assert_held(&mvm->mutex);
+
+	ret = iwl_mvm_send_cmd(mvm, &hcmd);
+	if (ret)
+		return ret;
+
+	if (WARN(iwl_rx_packet_payload_len(hcmd.resp_pkt) != sizeof(*rsp),
+		 "Invalid payload len in NVM response from FW %d",
+		 iwl_rx_packet_payload_len(hcmd.resp_pkt))) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	rsp = (void *)hcmd.resp_pkt->data;
+	if (le32_to_cpu(rsp->general.flags)) {
+		IWL_ERR(mvm, "Invalid NVM data from FW\n");
+		ret = -EINVAL;
+		goto out;
+	}
+
+	mvm->nvm_data = kzalloc(sizeof(*mvm->nvm_data) +
+				sizeof(struct ieee80211_channel) *
+				IWL_NUM_CHANNELS, GFP_KERNEL);
+	if (!mvm->nvm_data) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	iwl_set_hw_address_from_csr(trans, mvm->nvm_data);
+	/* TODO: if platform NVM has MAC address - override it here */
+
+	if (!is_valid_ether_addr(mvm->nvm_data->hw_addr)) {
+		IWL_ERR(trans, "no valid mac address was found\n");
+		ret = -EINVAL;
+		goto err_free;
+	}
+
+	IWL_INFO(trans, "base HW address: %pM\n", mvm->nvm_data->hw_addr);
+
+	/* Initialize general data */
+	mvm->nvm_data->nvm_version = le16_to_cpu(rsp->general.nvm_version);
+
+	/* Initialize MAC sku data */
+	mvm->nvm_data->sku_cap_11ac_enable =
+		le32_to_cpu(rsp->mac_sku.enable_11ac);
+	mvm->nvm_data->sku_cap_11n_enable =
+		le32_to_cpu(rsp->mac_sku.enable_11n);
+	mvm->nvm_data->sku_cap_band_24GHz_enable =
+		le32_to_cpu(rsp->mac_sku.enable_24g);
+	mvm->nvm_data->sku_cap_band_52GHz_enable =
+		le32_to_cpu(rsp->mac_sku.enable_5g);
+	mvm->nvm_data->sku_cap_mimo_disabled =
+		le32_to_cpu(rsp->mac_sku.mimo_disable);
+
+	/* Initialize PHY sku data */
+	mvm->nvm_data->valid_tx_ant = (u8)le32_to_cpu(rsp->phy_sku.tx_chains);
+	mvm->nvm_data->valid_rx_ant = (u8)le32_to_cpu(rsp->phy_sku.rx_chains);
+
+	/* Initialize regulatory data */
+	mvm->nvm_data->lar_enabled =
+		le32_to_cpu(rsp->regulatory.lar_enabled) && lar_fw_supported;
+
+	iwl_init_sbands(trans->dev, trans->cfg, mvm->nvm_data,
+			rsp->regulatory.channel_profile,
+			mvm->nvm_data->valid_tx_ant & mvm->fw->valid_tx_ant,
+			mvm->nvm_data->valid_rx_ant & mvm->fw->valid_rx_ant,
+			rsp->regulatory.lar_enabled && lar_fw_supported,
+			false);
+
+	iwl_free_resp(&hcmd);
+	return 0;
+
+err_free:
+	kfree(mvm->nvm_data);
+out:
+	iwl_free_resp(&hcmd);
+	return ret;
+}
+
 int iwl_nvm_init(struct iwl_mvm *mvm, bool read_nvm_from_nic)
 {
 	int ret, section;
 	u32 size_read = 0;
 	u8 *nvm_buffer, *temp;
-	const char *nvm_file_B = mvm->cfg->default_nvm_file_B_step;
 	const char *nvm_file_C = mvm->cfg->default_nvm_file_C_step;
 
 	if (WARN_ON_ONCE(mvm->cfg->nvm_hw_section_num >= NVM_MAX_NUM_SECTIONS))
@@ -627,14 +715,7 @@ int iwl_nvm_init(struct iwl_mvm *mvm, bool read_nvm_from_nic)
 		/* read External NVM file from the mod param */
 		ret = iwl_mvm_read_external_nvm(mvm);
 		if (ret) {
-			/* choose the nvm_file name according to the
-			 * HW step
-			 */
-			if (CSR_HW_REV_STEP(mvm->trans->hw_rev) ==
-			    SILICON_B_STEP)
-				mvm->nvm_file_name = nvm_file_B;
-			else
-				mvm->nvm_file_name = nvm_file_C;
+			mvm->nvm_file_name = nvm_file_C;
 
 			if ((ret == -EFAULT || ret == -ENOENT) &&
 			    mvm->nvm_file_name) {
@@ -705,6 +786,10 @@ iwl_mvm_update_mcc(struct iwl_mvm *mvm, const char *alpha2,
 		resp_len = sizeof(struct iwl_mcc_update_resp) +
 			   n_channels * sizeof(__le32);
 		resp_cp = kmemdup(mcc_resp, resp_len, GFP_KERNEL);
+		if (!resp_cp) {
+			resp_cp = ERR_PTR(-ENOMEM);
+			goto exit;
+		}
 	} else {
 		struct iwl_mcc_update_resp_v1 *mcc_resp_v1 = (void *)pkt->data;
 
@@ -712,21 +797,18 @@ iwl_mvm_update_mcc(struct iwl_mvm *mvm, const char *alpha2,
 		resp_len = sizeof(struct iwl_mcc_update_resp) +
 			   n_channels * sizeof(__le32);
 		resp_cp = kzalloc(resp_len, GFP_KERNEL);
-
-		if (resp_cp) {
-			resp_cp->status = mcc_resp_v1->status;
-			resp_cp->mcc = mcc_resp_v1->mcc;
-			resp_cp->cap = mcc_resp_v1->cap;
-			resp_cp->source_id = mcc_resp_v1->source_id;
-			resp_cp->n_channels = mcc_resp_v1->n_channels;
-			memcpy(resp_cp->channels, mcc_resp_v1->channels,
-			       n_channels * sizeof(__le32));
+		if (!resp_cp) {
+			resp_cp = ERR_PTR(-ENOMEM);
+			goto exit;
 		}
-	}
 
-	if (!resp_cp) {
-		ret = -ENOMEM;
-		goto exit;
+		resp_cp->status = mcc_resp_v1->status;
+		resp_cp->mcc = mcc_resp_v1->mcc;
+		resp_cp->cap = mcc_resp_v1->cap;
+		resp_cp->source_id = mcc_resp_v1->source_id;
+		resp_cp->n_channels = mcc_resp_v1->n_channels;
+		memcpy(resp_cp->channels, mcc_resp_v1->channels,
+		       n_channels * sizeof(__le32));
 	}
 
 	status = le32_to_cpu(resp_cp->status);
@@ -746,100 +828,8 @@ iwl_mvm_update_mcc(struct iwl_mvm *mvm, const char *alpha2,
 
 exit:
 	iwl_free_resp(&cmd);
-	if (ret)
-		return ERR_PTR(ret);
 	return resp_cp;
 }
-
-#ifdef CONFIG_ACPI
-#define WRD_METHOD		"WRDD"
-#define WRDD_WIFI		(0x07)
-#define WRDD_WIGIG		(0x10)
-
-static u32 iwl_mvm_wrdd_get_mcc(struct iwl_mvm *mvm, union acpi_object *wrdd)
-{
-	union acpi_object *mcc_pkg, *domain_type, *mcc_value;
-	u32 i;
-
-	if (wrdd->type != ACPI_TYPE_PACKAGE ||
-	    wrdd->package.count < 2 ||
-	    wrdd->package.elements[0].type != ACPI_TYPE_INTEGER ||
-	    wrdd->package.elements[0].integer.value != 0) {
-		IWL_DEBUG_LAR(mvm, "Unsupported wrdd structure\n");
-		return 0;
-	}
-
-	for (i = 1 ; i < wrdd->package.count ; ++i) {
-		mcc_pkg = &wrdd->package.elements[i];
-
-		if (mcc_pkg->type != ACPI_TYPE_PACKAGE ||
-		    mcc_pkg->package.count < 2 ||
-		    mcc_pkg->package.elements[0].type != ACPI_TYPE_INTEGER ||
-		    mcc_pkg->package.elements[1].type != ACPI_TYPE_INTEGER) {
-			mcc_pkg = NULL;
-			continue;
-		}
-
-		domain_type = &mcc_pkg->package.elements[0];
-		if (domain_type->integer.value == WRDD_WIFI)
-			break;
-
-		mcc_pkg = NULL;
-	}
-
-	if (mcc_pkg) {
-		mcc_value = &mcc_pkg->package.elements[1];
-		return mcc_value->integer.value;
-	}
-
-	return 0;
-}
-
-static int iwl_mvm_get_bios_mcc(struct iwl_mvm *mvm, char *mcc)
-{
-	acpi_handle root_handle;
-	acpi_handle handle;
-	struct acpi_buffer wrdd = {ACPI_ALLOCATE_BUFFER, NULL};
-	acpi_status status;
-	u32 mcc_val;
-
-	root_handle = ACPI_HANDLE(mvm->dev);
-	if (!root_handle) {
-		IWL_DEBUG_LAR(mvm,
-			      "Could not retrieve root port ACPI handle\n");
-		return -ENOENT;
-	}
-
-	/* Get the method's handle */
-	status = acpi_get_handle(root_handle, (acpi_string)WRD_METHOD, &handle);
-	if (ACPI_FAILURE(status)) {
-		IWL_DEBUG_LAR(mvm, "WRD method not found\n");
-		return -ENOENT;
-	}
-
-	/* Call WRDD with no arguments */
-	status = acpi_evaluate_object(handle, NULL, NULL, &wrdd);
-	if (ACPI_FAILURE(status)) {
-		IWL_DEBUG_LAR(mvm, "WRDC invocation failed (0x%x)\n", status);
-		return -ENOENT;
-	}
-
-	mcc_val = iwl_mvm_wrdd_get_mcc(mvm, wrdd.pointer);
-	kfree(wrdd.pointer);
-	if (!mcc_val)
-		return -ENOENT;
-
-	mcc[0] = (mcc_val >> 8) & 0xff;
-	mcc[1] = mcc_val & 0xff;
-	mcc[2] = '\0';
-	return 0;
-}
-#else /* CONFIG_ACPI */
-static int iwl_mvm_get_bios_mcc(struct iwl_mvm *mvm, char *mcc)
-{
-	return -ENOENT;
-}
-#endif
 
 int iwl_mvm_init_mcc(struct iwl_mvm *mvm)
 {
@@ -849,7 +839,7 @@ int iwl_mvm_init_mcc(struct iwl_mvm *mvm)
 	struct ieee80211_regdomain *regd;
 	char mcc[3];
 
-	if (mvm->cfg->device_family == IWL_DEVICE_FAMILY_8000) {
+	if (mvm->cfg->ext_nvm) {
 		tlv_lar = fw_has_capa(&mvm->fw->ucode_capa,
 				      IWL_UCODE_TLV_CAPA_LAR_SUPPORT);
 		nvm_lar = mvm->nvm_data->lar_enabled;
@@ -884,7 +874,7 @@ int iwl_mvm_init_mcc(struct iwl_mvm *mvm)
 		return -EIO;
 
 	if (iwl_mvm_is_wifi_mcc_supported(mvm) &&
-	    !iwl_mvm_get_bios_mcc(mvm, mcc)) {
+	    !iwl_get_bios_mcc(mvm->dev, mcc)) {
 		kfree(regd);
 		regd = iwl_mvm_get_regdomain(mvm->hw->wiphy, mcc,
 					     MCC_SOURCE_BIOS, NULL);
@@ -908,11 +898,16 @@ void iwl_mvm_rx_chub_update_mcc(struct iwl_mvm *mvm,
 
 	lockdep_assert_held(&mvm->mutex);
 
+	if (iwl_mvm_is_vif_assoc(mvm) && notif->source_id == MCC_SOURCE_WIFI) {
+		IWL_DEBUG_LAR(mvm, "Ignore mcc update while associated\n");
+		return;
+	}
+
 	if (WARN_ON_ONCE(!iwl_mvm_is_lar_supported(mvm)))
 		return;
 
-	mcc[0] = notif->mcc >> 8;
-	mcc[1] = notif->mcc & 0xff;
+	mcc[0] = le16_to_cpu(notif->mcc) >> 8;
+	mcc[1] = le16_to_cpu(notif->mcc) & 0xff;
 	mcc[2] = '\0';
 	src = notif->source_id;
 

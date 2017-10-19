@@ -1,15 +1,47 @@
 /* QLogic qed NIC Driver
- * Copyright (c) 2015 QLogic Corporation
+ * Copyright (c) 2015-2017  QLogic Corporation
  *
- * This software is available under the terms of the GNU General Public License
- * (GPL) Version 2, available from the file COPYING in the main directory of
- * this source tree.
+ * This software is available to you under a choice of one of two
+ * licenses.  You may choose to be licensed under the terms of the GNU
+ * General Public License (GPL) Version 2, available from the file
+ * COPYING in the main directory of this source tree, or the
+ * OpenIB.org BSD license below:
+ *
+ *     Redistribution and use in source and binary forms, with or
+ *     without modification, are permitted provided that the following
+ *     conditions are met:
+ *
+ *      - Redistributions of source code must retain the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer.
+ *
+ *      - Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and /or other materials
+ *        provided with the distribution.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #ifndef __TCP_COMMON__
 #define __TCP_COMMON__
 
 #define TCP_INVALID_TIMEOUT_VAL -1
+
+struct ooo_opaque {
+	__le32 cid;
+	u8 drop_isle;
+	u8 drop_size;
+	u8 ooo_opcode;
+	u8 ooo_isle;
+};
 
 enum tcp_connect_mode {
 	TCP_CONNECT_ACTIVE,
@@ -18,14 +50,10 @@ enum tcp_connect_mode {
 };
 
 struct tcp_init_params {
-	__le32 max_cwnd;
-	__le16 dup_ack_threshold;
+	__le32 two_msl_timer;
 	__le16 tx_sws_timer;
-	__le16 min_rto;
-	__le16 min_rto_rt;
-	__le16 max_rto;
 	u8 maxfinrt;
-	u8 reserved[1];
+	u8 reserved[9];
 };
 
 enum tcp_ip_version {
@@ -83,7 +111,6 @@ struct tcp_offload_params {
 	__le32 snd_wnd;
 	__le32 rcv_wnd;
 	__le32 snd_wl1;
-	__le32 ts_time;
 	__le32 ts_recent;
 	__le32 ts_recent_age;
 	__le32 total_rt;
@@ -94,7 +121,7 @@ struct tcp_offload_params {
 	u8 ka_probe_cnt;
 	u8 rt_cnt;
 	__le16 rtt_var;
-	__le16 reserved2;
+	__le16 fw_internal;
 	__le32 ka_timeout;
 	__le32 ka_interval;
 	__le32 max_rt_time;
@@ -102,7 +129,7 @@ struct tcp_offload_params {
 	u8 snd_wnd_scale;
 	u8 ack_frequency;
 	__le16 da_timeout_value;
-	__le32 ts_ticks_per_second;
+	__le32 reserved3[2];
 };
 
 struct tcp_offload_params_opt2 {
@@ -145,6 +172,7 @@ enum tcp_seg_placement_event {
 	TCP_EVENT_ADD_ISLE_RIGHT,
 	TCP_EVENT_ADD_ISLE_LEFT,
 	TCP_EVENT_JOIN,
+	TCP_EVENT_DELETE_ISLES,
 	TCP_EVENT_NOP,
 	MAX_TCP_SEG_PLACEMENT_EVENT
 };

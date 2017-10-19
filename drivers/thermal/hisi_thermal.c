@@ -237,7 +237,8 @@ static irqreturn_t hisi_thermal_alarm_irq_thread(int irq, void *dev)
 		if (!data->sensors[i].tzd)
 			continue;
 
-		thermal_zone_device_update(data->sensors[i].tzd);
+		thermal_zone_device_update(data->sensors[i].tzd,
+					   THERMAL_EVENT_UNSPECIFIED);
 	}
 
 	return IRQ_HANDLED;
@@ -396,8 +397,11 @@ static int hisi_thermal_suspend(struct device *dev)
 static int hisi_thermal_resume(struct device *dev)
 {
 	struct hisi_thermal_data *data = dev_get_drvdata(dev);
+	int ret;
 
-	clk_prepare_enable(data->clk);
+	ret = clk_prepare_enable(data->clk);
+	if (ret)
+		return ret;
 
 	data->irq_enabled = true;
 	hisi_thermal_enable_bind_irq_sensor(data);

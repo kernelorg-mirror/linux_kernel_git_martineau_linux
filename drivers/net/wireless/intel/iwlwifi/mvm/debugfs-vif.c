@@ -7,7 +7,7 @@
  *
  * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
  * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
- * Copyright(c) 2016        Intel Deutschland GmbH
+ * Copyright(c) 2016 - 2017 Intel Deutschland GmbH
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -34,7 +34,7 @@
  *
  * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
  * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
- * Copyright(c) 2016        Intel Deutschland GmbH
+ * Copyright(c) 2016 - 2017 Intel Deutschland GmbH
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -280,7 +280,7 @@ static ssize_t iwl_dbgfs_mac_params_read(struct file *file,
 				 mvmvif->queue_params[i].uapsd);
 
 	if (vif->type == NL80211_IFTYPE_STATION &&
-	    ap_sta_id != IWL_MVM_STATION_COUNT) {
+	    ap_sta_id != IWL_MVM_INVALID_STA) {
 		struct iwl_mvm_sta *mvm_sta;
 
 		mvm_sta = iwl_mvm_sta_from_staid_protected(mvm, ap_sta_id);
@@ -502,6 +502,28 @@ static inline char *iwl_dbgfs_is_match(char *name, char *buf)
 	int len = strlen(name);
 
 	return !strncmp(name, buf, len) ? buf + len : NULL;
+}
+
+static ssize_t iwl_dbgfs_os_device_timediff_read(struct file *file,
+						 char __user *user_buf,
+						 size_t count, loff_t *ppos)
+{
+	struct ieee80211_vif *vif = file->private_data;
+	struct iwl_mvm_vif *mvmvif = iwl_mvm_vif_from_mac80211(vif);
+	struct iwl_mvm *mvm = mvmvif->mvm;
+	u32 curr_gp2;
+	u64 curr_os;
+	s64 diff;
+	char buf[64];
+	const size_t bufsz = sizeof(buf);
+	int pos = 0;
+
+	iwl_mvm_get_sync_time(mvm, &curr_gp2, &curr_os);
+	do_div(curr_os, NSEC_PER_USEC);
+	diff = curr_os - curr_gp2;
+	pos += scnprintf(buf + pos, bufsz - pos, "diff=%lld\n", diff);
+
+	return simple_read_from_buffer(user_buf, count, ppos, buf, pos);
 }
 
 static ssize_t iwl_dbgfs_tof_enable_write(struct ieee80211_vif *vif,
@@ -1282,11 +1304,11 @@ static ssize_t iwl_dbgfs_low_latency_read(struct file *file,
 	char buf[30] = {};
 	int len;
 
-	len = snprintf(buf, sizeof(buf) - 1,
-		       "traffic=%d\ndbgfs=%d\nvcmd=%d\n",
-		       mvmvif->low_latency_traffic,
-		       mvmvif->low_latency_dbgfs,
-		       mvmvif->low_latency_vcmd);
+	len = scnprintf(buf, sizeof(buf) - 1,
+			"traffic=%d\ndbgfs=%d\nvcmd=%d\n",
+			mvmvif->low_latency_traffic,
+			mvmvif->low_latency_dbgfs,
+			mvmvif->low_latency_vcmd);
 	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
 }
 
@@ -1363,10 +1385,12 @@ static ssize_t iwl_dbgfs_rx_phyinfo_read(struct file *file,
 	struct ieee80211_vif *vif = file->private_data;
 	struct iwl_mvm_vif *mvmvif = iwl_mvm_vif_from_mac80211(vif);
 	char buf[8];
+	int len;
 
-	snprintf(buf, sizeof(buf), "0x%04x\n", mvmvif->mvm->dbgfs_rx_phyinfo);
+	len = scnprintf(buf, sizeof(buf), "0x%04x\n",
+			mvmvif->mvm->dbgfs_rx_phyinfo);
 
-	return simple_read_from_buffer(user_buf, count, ppos, buf, sizeof(buf));
+	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
 }
 
 static void iwl_dbgfs_quota_check(void *data, u8 *mac,
@@ -1417,7 +1441,7 @@ static ssize_t iwl_dbgfs_quota_min_read(struct file *file,
 	char buf[10];
 	int len;
 
-	len = snprintf(buf, sizeof(buf), "%d\n", mvmvif->dbgfs_quota_min);
+	len = scnprintf(buf, sizeof(buf), "%d\n", mvmvif->dbgfs_quota_min);
 
 	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
 }
@@ -1530,6 +1554,8 @@ MVM_DEBUGFS_READ_FILE_OPS(tof_range_response);
 MVM_DEBUGFS_READ_WRITE_FILE_OPS(tof_responder_params, 32);
 MVM_DEBUGFS_READ_WRITE_FILE_OPS(quota_min, 32);
 MVM_DEBUGFS_WRITE_FILE_OPS(lqm_send_cmd, 64);
+MVM_DEBUGFS_READ_FILE_OPS(os_device_timediff);
+
 
 void iwl_mvm_vif_dbgfs_register(struct iwl_mvm *mvm, struct ieee80211_vif *vif)
 {
@@ -1547,15 +1573,14 @@ void iwl_mvm_vif_dbgfs_register(struct iwl_mvm *mvm, struct ieee80211_vif *vif)
 	mvmvif->dbgfs_dir = debugfs_create_dir("iwlmvm", dbgfs_dir);
 
 	if (!mvmvif->dbgfs_dir) {
-		IWL_ERR(mvm, "Failed to create debugfs directory under %s\n",
-			dbgfs_dir->d_name.name);
+		IWL_ERR(mvm, "Failed to create debugfs directory under %pd\n",
+			dbgfs_dir);
 		return;
 	}
 
 	if (iwlmvm_mod_params.power_scheme != IWL_POWER_SCHEME_CAM &&
 	    ((vif->type == NL80211_IFTYPE_STATION && !vif->p2p) ||
-	     (vif->type == NL80211_IFTYPE_STATION && vif->p2p &&
-	      mvm->fw->ucode_capa.flags & IWL_UCODE_TLV_FLAGS_BSS_P2P_PS_DCM)))
+	     (vif->type == NL80211_IFTYPE_STATION && vif->p2p)))
 		MVM_DEBUGFS_ADD_FILE_VIF(pm_params, mvmvif->dbgfs_dir, S_IWUSR |
 					 S_IRUSR);
 
@@ -1570,6 +1595,8 @@ void iwl_mvm_vif_dbgfs_register(struct iwl_mvm *mvm, struct ieee80211_vif *vif)
 	MVM_DEBUGFS_ADD_FILE_VIF(quota_min, mvmvif->dbgfs_dir,
 				 S_IRUSR | S_IWUSR);
 	MVM_DEBUGFS_ADD_FILE_VIF(lqm_send_cmd, mvmvif->dbgfs_dir, S_IWUSR);
+	MVM_DEBUGFS_ADD_FILE_VIF(os_device_timediff,
+				 mvmvif->dbgfs_dir, S_IRUSR);
 
 	if (vif->type == NL80211_IFTYPE_STATION && !vif->p2p &&
 	    mvmvif == mvm->bf_allowed_vif)
@@ -1602,17 +1629,15 @@ void iwl_mvm_vif_dbgfs_register(struct iwl_mvm *mvm, struct ieee80211_vif *vif)
 	 * find
 	 * netdev:wlan0 -> ../../../ieee80211/phy0/netdev:wlan0/iwlmvm/
 	 */
-	snprintf(buf, 100, "../../../%s/%s/%s/%s",
-		 dbgfs_dir->d_parent->d_parent->d_name.name,
-		 dbgfs_dir->d_parent->d_name.name,
-		 dbgfs_dir->d_name.name,
-		 mvmvif->dbgfs_dir->d_name.name);
+	snprintf(buf, 100, "../../../%pd3/%pd",
+		 dbgfs_dir,
+		 mvmvif->dbgfs_dir);
 
 	mvmvif->dbgfs_slink = debugfs_create_symlink(dbgfs_dir->d_name.name,
 						     mvm->debugfs_dir, buf);
 	if (!mvmvif->dbgfs_slink)
-		IWL_ERR(mvm, "Can't create debugfs symbolic link under %s\n",
-			dbgfs_dir->d_name.name);
+		IWL_ERR(mvm, "Can't create debugfs symbolic link under %pd\n",
+			dbgfs_dir);
 	return;
 err:
 	IWL_ERR(mvm, "Can't create debugfs entity\n");

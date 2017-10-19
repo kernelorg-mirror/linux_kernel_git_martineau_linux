@@ -18,7 +18,6 @@
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/module.h>
-#include <linux/kconfig.h>
 #include <linux/platform_device.h>
 #include <linux/spinlock.h>
 #include <linux/of.h>
@@ -190,6 +189,7 @@ static int __init brcmstb_l2_intc_of_init(struct device_node *np,
 
 	ct->chip.irq_suspend = brcmstb_l2_intc_suspend;
 	ct->chip.irq_resume = brcmstb_l2_intc_resume;
+	ct->chip.irq_pm_shutdown = brcmstb_l2_intc_suspend;
 
 	if (data->can_wake) {
 		/* This IRQ chip can wake the system, set all child interrupts

@@ -1001,16 +1001,11 @@ static enum drm_connector_status anx78xx_detect(struct drm_connector *connector,
 	return connector_status_connected;
 }
 
-static void anx78xx_connector_destroy(struct drm_connector *connector)
-{
-	drm_connector_cleanup(connector);
-}
-
 static const struct drm_connector_funcs anx78xx_connector_funcs = {
 	.dpms = drm_atomic_helper_connector_dpms,
 	.fill_modes = drm_helper_probe_single_connector_modes,
 	.detect = anx78xx_detect,
-	.destroy = anx78xx_connector_destroy,
+	.destroy = drm_connector_cleanup,
 	.reset = drm_atomic_helper_connector_reset,
 	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
@@ -1066,18 +1061,18 @@ static int anx78xx_bridge_attach(struct drm_bridge *bridge)
 	return 0;
 }
 
-static bool anx78xx_bridge_mode_fixup(struct drm_bridge *bridge,
-				      const struct drm_display_mode *mode,
-				      struct drm_display_mode *adjusted_mode)
+static enum drm_mode_status
+anx78xx_bridge_mode_valid(struct drm_bridge *bridge,
+			  const struct drm_display_mode *mode)
 {
 	if (mode->flags & DRM_MODE_FLAG_INTERLACE)
-		return false;
+		return MODE_NO_INTERLACE;
 
 	/* Max 1200p at 5.4 Ghz, one lane */
 	if (mode->clock > 154000)
-		return false;
+		return MODE_CLOCK_HIGH;
 
-	return true;
+	return MODE_OK;
 }
 
 static void anx78xx_bridge_disable(struct drm_bridge *bridge)
@@ -1134,7 +1129,7 @@ static void anx78xx_bridge_enable(struct drm_bridge *bridge)
 
 static const struct drm_bridge_funcs anx78xx_bridge_funcs = {
 	.attach = anx78xx_bridge_attach,
-	.mode_fixup = anx78xx_bridge_mode_fixup,
+	.mode_valid = anx78xx_bridge_mode_valid,
 	.disable = anx78xx_bridge_disable,
 	.mode_set = anx78xx_bridge_mode_set,
 	.enable = anx78xx_bridge_enable,

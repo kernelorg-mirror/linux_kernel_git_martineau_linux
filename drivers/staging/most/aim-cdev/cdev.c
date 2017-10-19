@@ -57,7 +57,11 @@ static inline bool ch_has_mbo(struct aim_channel *c)
 
 static inline bool ch_get_mbo(struct aim_channel *c, struct mbo **mbo)
 {
-	*mbo = most_get_mbo(c->iface, c->channel_id, &cdev_aim);
+	if (!kfifo_peek(&c->fifo, mbo)) {
+		*mbo = most_get_mbo(c->iface, c->channel_id, &cdev_aim);
+		if (*mbo)
+			kfifo_in(&c->fifo, mbo, 1);
+	}
 	return *mbo;
 }
 
@@ -95,11 +99,16 @@ static void destroy_cdev(struct aim_channel *c)
 
 	device_destroy(aim_class, c->devno);
 	cdev_del(&c->cdev);
-	kfifo_free(&c->fifo);
 	spin_lock_irqsave(&ch_list_lock, flags);
 	list_del(&c->list);
 	spin_unlock_irqrestore(&ch_list_lock, flags);
+}
+
+static void destroy_channel(struct aim_channel *c)
+{
 	ida_simple_remove(&minor_id, MINOR(c->devno));
+	kfifo_free(&c->fifo);
+	kfree(c);
 }
 
 /**
@@ -130,7 +139,7 @@ static int aim_open(struct inode *inode, struct file *filp)
 	if (!c->dev) {
 		pr_info("WARN: Device is destroyed\n");
 		mutex_unlock(&c->io_mutex);
-		return -EBUSY;
+		return -ENODEV;
 	}
 
 	if (c->access_ref) {
@@ -166,9 +175,8 @@ static int aim_close(struct inode *inode, struct file *filp)
 		stop_channel(c);
 		mutex_unlock(&c->io_mutex);
 	} else {
-		destroy_cdev(c);
 		mutex_unlock(&c->io_mutex);
-		kfree(c);
+		destroy_channel(c);
 	}
 	return 0;
 }
@@ -184,8 +192,7 @@ static ssize_t aim_write(struct file *filp, const char __user *buf,
 			 size_t count, loff_t *offset)
 {
 	int ret;
-	size_t actual_len;
-	size_t max_len;
+	size_t to_copy, left;
 	struct mbo *mbo = NULL;
 	struct aim_channel *c = filp->private_data;
 
@@ -201,27 +208,28 @@ static ssize_t aim_write(struct file *filp, const char __user *buf,
 	}
 
 	if (unlikely(!c->dev)) {
-		ret = -EPIPE;
+		ret = -ENODEV;
 		goto unlock;
 	}
 
-	max_len = c->cfg->buffer_size;
-	actual_len = min(count, max_len);
-	mbo->buffer_length = actual_len;
-
-	if (copy_from_user(mbo->virt_address, buf, mbo->buffer_length)) {
+	to_copy = min(count, c->cfg->buffer_size - c->mbo_offs);
+	left = copy_from_user(mbo->virt_address + c->mbo_offs, buf, to_copy);
+	if (left == to_copy) {
 		ret = -EFAULT;
-		goto put_mbo;
+		goto unlock;
 	}
 
-	ret = most_submit_mbo(mbo);
-	if (ret)
-		goto put_mbo;
+	c->mbo_offs += to_copy - left;
+	if (c->mbo_offs >= c->cfg->buffer_size ||
+	    c->cfg->data_type == MOST_CH_CONTROL ||
+	    c->cfg->data_type == MOST_CH_ASYNC) {
+		kfifo_skip(&c->fifo);
+		mbo->buffer_length = c->mbo_offs;
+		c->mbo_offs = 0;
+		most_submit_mbo(mbo);
+	}
 
-	mutex_unlock(&c->io_mutex);
-	return actual_len;
-put_mbo:
-	most_put_mbo(mbo);
+	ret = to_copy - left;
 unlock:
 	mutex_unlock(&c->io_mutex);
 	return ret;
@@ -256,7 +264,7 @@ aim_read(struct file *filp, char __user *buf, size_t count, loff_t *offset)
 	/* make sure we don't submit to gone devices */
 	if (unlikely(!c->dev)) {
 		mutex_unlock(&c->io_mutex);
-		return -EIO;
+		return -ENODEV;
 	}
 
 	to_copy = min_t(size_t,
@@ -290,7 +298,7 @@ static unsigned int aim_poll(struct file *filp, poll_table *wait)
 		if (!kfifo_is_empty(&c->fifo))
 			mask |= POLLIN | POLLRDNORM;
 	} else {
-		if (ch_has_mbo(c))
+		if (!kfifo_is_empty(&c->fifo) || ch_has_mbo(c))
 			mask |= POLLOUT | POLLWRNORM;
 	}
 	return mask;
@@ -333,14 +341,14 @@ static int aim_disconnect_channel(struct most_interface *iface, int channel_id)
 	spin_lock(&c->unlink);
 	c->dev = NULL;
 	spin_unlock(&c->unlink);
+	destroy_cdev(c);
 	if (c->access_ref) {
 		stop_channel(c);
 		wake_up_interruptible(&c->wq);
 		mutex_unlock(&c->io_mutex);
 	} else {
-		destroy_cdev(c);
 		mutex_unlock(&c->io_mutex);
-		kfree(c);
+		destroy_channel(c);
 	}
 	return 0;
 }
@@ -366,7 +374,7 @@ static int aim_rx_completion(struct mbo *mbo)
 	spin_lock(&c->unlink);
 	if (!c->access_ref || !c->dev) {
 		spin_unlock(&c->unlink);
-		return -EFAULT;
+		return -ENODEV;
 	}
 	kfifo_in(&c->fifo, &mbo, 1);
 	spin_unlock(&c->unlink);
@@ -499,23 +507,27 @@ static struct most_aim cdev_aim = {
 
 static int __init mod_init(void)
 {
+	int err;
+
 	pr_info("init()\n");
 
 	INIT_LIST_HEAD(&channel_list);
 	spin_lock_init(&ch_list_lock);
 	ida_init(&minor_id);
 
-	if (alloc_chrdev_region(&aim_devno, 0, 50, "cdev") < 0)
-		return -EIO;
+	err = alloc_chrdev_region(&aim_devno, 0, 50, "cdev");
+	if (err < 0)
+		goto dest_ida;
 	major = MAJOR(aim_devno);
 
 	aim_class = class_create(THIS_MODULE, "most_cdev_aim");
 	if (IS_ERR(aim_class)) {
 		pr_err("no udev support\n");
+		err = PTR_ERR(aim_class);
 		goto free_cdev;
 	}
-
-	if (most_register_aim(&cdev_aim))
+	err = most_register_aim(&cdev_aim);
+	if (err)
 		goto dest_class;
 	return 0;
 
@@ -523,7 +535,9 @@ dest_class:
 	class_destroy(aim_class);
 free_cdev:
 	unregister_chrdev_region(aim_devno, 1);
-	return -EIO;
+dest_ida:
+	ida_destroy(&minor_id);
+	return err;
 }
 
 static void __exit mod_exit(void)
@@ -536,7 +550,7 @@ static void __exit mod_exit(void)
 
 	list_for_each_entry_safe(c, tmp, &channel_list, list) {
 		destroy_cdev(c);
-		kfree(c);
+		destroy_channel(c);
 	}
 	class_destroy(aim_class);
 	unregister_chrdev_region(aim_devno, 1);

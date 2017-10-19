@@ -112,9 +112,8 @@ extern int __bitmap_intersects(const unsigned long *bitmap1,
 extern int __bitmap_subset(const unsigned long *bitmap1,
 			const unsigned long *bitmap2, unsigned int nbits);
 extern int __bitmap_weight(const unsigned long *bitmap, unsigned int nbits);
-
-extern void bitmap_set(unsigned long *map, unsigned int start, int len);
-extern void bitmap_clear(unsigned long *map, unsigned int start, int len);
+extern void __bitmap_set(unsigned long *map, unsigned int start, int len);
+extern void __bitmap_clear(unsigned long *map, unsigned int start, int len);
 
 extern unsigned long bitmap_find_next_zero_area_off(unsigned long *map,
 						    unsigned long size,
@@ -267,10 +266,8 @@ static inline int bitmap_equal(const unsigned long *src1,
 {
 	if (small_const_nbits(nbits))
 		return !((*src1 ^ *src2) & BITMAP_LAST_WORD_MASK(nbits));
-#ifdef CONFIG_S390
-	if (__builtin_constant_p(nbits) && (nbits % BITS_PER_LONG) == 0)
+	if (__builtin_constant_p(nbits & 7) && IS_ALIGNED(nbits, 8))
 		return !memcmp(src1, src2, nbits / 8);
-#endif
 	return __bitmap_equal(src1, src2, nbits);
 }
 
@@ -315,6 +312,30 @@ static __always_inline int bitmap_weight(const unsigned long *src, unsigned int 
 	return __bitmap_weight(src, nbits);
 }
 
+static __always_inline void bitmap_set(unsigned long *map, unsigned int start,
+		unsigned int nbits)
+{
+	if (__builtin_constant_p(nbits) && nbits == 1)
+		__set_bit(start, map);
+	else if (__builtin_constant_p(start & 7) && IS_ALIGNED(start, 8) &&
+		 __builtin_constant_p(nbits & 7) && IS_ALIGNED(nbits, 8))
+		memset((char *)map + start / 8, 0xff, nbits / 8);
+	else
+		__bitmap_set(map, start, nbits);
+}
+
+static __always_inline void bitmap_clear(unsigned long *map, unsigned int start,
+		unsigned int nbits)
+{
+	if (__builtin_constant_p(nbits) && nbits == 1)
+		__clear_bit(start, map);
+	else if (__builtin_constant_p(start & 7) && IS_ALIGNED(start, 8) &&
+		 __builtin_constant_p(nbits & 7) && IS_ALIGNED(nbits, 8))
+		memset((char *)map + start / 8, 0, nbits / 8);
+	else
+		__bitmap_clear(map, start, nbits);
+}
+
 static inline void bitmap_shift_right(unsigned long *dst, const unsigned long *src,
 				unsigned int shift, int nbits)
 {
@@ -337,6 +358,24 @@ static inline int bitmap_parse(const char *buf, unsigned int buflen,
 			unsigned long *maskp, int nmaskbits)
 {
 	return __bitmap_parse(buf, buflen, 0, maskp, nmaskbits);
+}
+
+/*
+ * bitmap_from_u64 - Check and swap words within u64.
+ *  @mask: source bitmap
+ *  @dst:  destination bitmap
+ *
+ * In 32-bit Big Endian kernel, when using (u32 *)(&val)[*]
+ * to read u64 mask, we will get the wrong word.
+ * That is "(u32 *)(&val)[0]" gets the upper 32 bits,
+ * but we expect the lower 32-bits of u64.
+ */
+static inline void bitmap_from_u64(unsigned long *dst, u64 mask)
+{
+	dst[0] = mask & ULONG_MAX;
+
+	if (sizeof(mask) > sizeof(unsigned long))
+		dst[1] = mask >> 32;
 }
 
 #endif /* __ASSEMBLY__ */

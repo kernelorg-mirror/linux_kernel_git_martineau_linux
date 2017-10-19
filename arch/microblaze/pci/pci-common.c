@@ -22,6 +22,7 @@
 #include <linux/init.h>
 #include <linux/bootmem.h>
 #include <linux/mm.h>
+#include <linux/shmem_fs.h>
 #include <linux/list.h>
 #include <linux/syscalls.h>
 #include <linux/irq.h>
@@ -277,7 +278,7 @@ pgprot_t pci_phys_mem_access_prot(struct file *file,
  *
  * Returns a negative error code on failure, zero on success.
  */
-int pci_mmap_page_range(struct pci_dev *dev, struct vm_area_struct *vma,
+int pci_mmap_page_range(struct pci_dev *dev, int bar, struct vm_area_struct *vma,
 			enum pci_mmap_state mmap_state, int write_combine)
 {
 	resource_size_t offset =
@@ -632,10 +633,10 @@ void pci_process_bridge_OF_ranges(struct pci_controller *hose,
 	}
 }
 
-/* Decide whether to display the domain number in /proc */
+/* Display the domain number in /proc */
 int pci_proc_domain(struct pci_bus *bus)
 {
-	return 0;
+	return pci_domain_nr(bus);
 }
 
 /* This header fixup will do the resource fixup for all devices as they are

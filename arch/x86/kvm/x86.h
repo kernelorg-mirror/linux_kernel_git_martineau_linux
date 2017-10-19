@@ -1,6 +1,8 @@
 #ifndef ARCH_X86_KVM_X86_H
 #define ARCH_X86_KVM_X86_H
 
+#include <asm/processor.h>
+#include <asm/mwait.h>
 #include <linux/kvm_host.h>
 #include <asm/pvclock.h>
 #include "kvm_cache_regs.h"
@@ -148,11 +150,6 @@ static inline void kvm_register_writel(struct kvm_vcpu *vcpu,
 	return kvm_register_write(vcpu, reg, val);
 }
 
-static inline u64 get_kernel_ns(void)
-{
-	return ktime_get_boot_ns();
-}
-
 static inline bool kvm_check_has_quirk(struct kvm *kvm, u64 quirk)
 {
 	return !(kvm->arch.disabled_quirks & quirk);
@@ -164,6 +161,7 @@ void kvm_set_pending_timer(struct kvm_vcpu *vcpu);
 int kvm_inject_realmode_interrupt(struct kvm_vcpu *vcpu, int irq, int inc_eip);
 
 void kvm_write_tsc(struct kvm_vcpu *vcpu, struct msr_data *msr);
+u64 get_kvmclock_ns(struct kvm *kvm);
 
 int kvm_read_guest_virt(struct x86_emulate_ctxt *ctxt,
 	gva_t addr, void *val, unsigned int bytes,
@@ -215,5 +213,39 @@ static inline u64 nsec_to_cycles(struct kvm_vcpu *vcpu, u64 nsec)
 	    n = __quot;						\
 	    __rem;						\
 	 })
+
+static inline bool kvm_mwait_in_guest(void)
+{
+	unsigned int eax, ebx, ecx, edx;
+
+	if (!cpu_has(&boot_cpu_data, X86_FEATURE_MWAIT))
+		return false;
+
+	switch (boot_cpu_data.x86_vendor) {
+	case X86_VENDOR_AMD:
+		/* All AMD CPUs have a working MWAIT implementation */
+		return true;
+	case X86_VENDOR_INTEL:
+		/* Handle Intel below */
+		break;
+	default:
+		return false;
+	}
+
+	/*
+	 * Intel CPUs without CPUID5_ECX_INTERRUPT_BREAK are problematic as
+	 * they would allow guest to stop the CPU completely by disabling
+	 * interrupts then invoking MWAIT.
+	 */
+	if (boot_cpu_data.cpuid_level < CPUID_MWAIT_LEAF)
+		return false;
+
+	cpuid(CPUID_MWAIT_LEAF, &eax, &ebx, &ecx, &edx);
+
+	if (!(ecx & CPUID5_ECX_INTERRUPT_BREAK))
+		return false;
+
+	return true;
+}
 
 #endif

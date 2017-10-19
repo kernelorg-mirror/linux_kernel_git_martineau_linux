@@ -90,9 +90,15 @@ static inline int extent_equal(struct interval_node_extent *e1,
 	return (e1->start == e2->start) && (e1->end == e2->end);
 }
 
-static inline __u64 max_u64(__u64 x, __u64 y)
+static inline int extent_overlapped(struct interval_node_extent *e1,
+				    struct interval_node_extent *e2)
 {
-	return x > y ? x : y;
+	return (e1->start <= e2->end) && (e2->start <= e1->end);
+}
+
+static inline int node_equal(struct interval_node *n1, struct interval_node *n2)
+{
+	return extent_equal(&n1->in_extent, &n2->in_extent);
 }
 
 static struct interval_node *interval_first(struct interval_node *node)
@@ -123,8 +129,8 @@ static void __rotate_change_maxhigh(struct interval_node *node,
 	rotate->in_max_high = node->in_max_high;
 	left_max = node->in_left ? node->in_left->in_max_high : 0;
 	right_max = node->in_right ? node->in_right->in_max_high : 0;
-	node->in_max_high  = max_u64(interval_high(node),
-				     max_u64(left_max, right_max));
+	node->in_max_high  = max(interval_high(node),
+				 max(left_max, right_max));
 }
 
 /* The left rotation "pivots" around the link from node to node->right, and
@@ -262,7 +268,7 @@ struct interval_node *interval_insert(struct interval_node *node,
 	p = root;
 	while (*p) {
 		parent = *p;
-		if (extent_equal(&parent->in_extent, &node->in_extent))
+		if (node_equal(parent, node))
 			return parent;
 
 		/* max_high field must be updated after each iteration */
@@ -383,8 +389,8 @@ static void update_maxhigh(struct interval_node *node,
 	while (node) {
 		left_max = node->in_left ? node->in_left->in_max_high : 0;
 		right_max = node->in_right ? node->in_right->in_max_high : 0;
-		node->in_max_high = max_u64(interval_high(node),
-					    max_u64(left_max, right_max));
+		node->in_max_high = max(interval_high(node),
+					max(left_max, right_max));
 
 		if (node->in_max_high >= old_maxhigh)
 			break;
@@ -463,3 +469,90 @@ color:
 		interval_erase_color(child, parent, root);
 }
 EXPORT_SYMBOL(interval_erase);
+
+static inline int interval_may_overlap(struct interval_node *node,
+				       struct interval_node_extent *ext)
+{
+	return (ext->start <= node->in_max_high &&
+		ext->end >= interval_low(node));
+}
+
+/*
+ * This function finds all intervals that overlap interval ext,
+ * and calls func to handle resulted intervals one by one.
+ * in lustre, this function will find all conflicting locks in
+ * the granted queue and add these locks to the ast work list.
+ *
+ * {
+ *	if (!node)
+ *		return 0;
+ *	if (ext->end < interval_low(node)) {
+ *		interval_search(node->in_left, ext, func, data);
+ *	} else if (interval_may_overlap(node, ext)) {
+ *		if (extent_overlapped(ext, &node->in_extent))
+ *			func(node, data);
+ *		interval_search(node->in_left, ext, func, data);
+ *		interval_search(node->in_right, ext, func, data);
+ *	}
+ *	return 0;
+ * }
+ *
+ */
+enum interval_iter interval_search(struct interval_node *node,
+				   struct interval_node_extent *ext,
+				   interval_callback_t func,
+				   void *data)
+{
+	enum interval_iter rc = INTERVAL_ITER_CONT;
+	struct interval_node *parent;
+
+	LASSERT(ext);
+	LASSERT(func);
+
+	while (node) {
+		if (ext->end < interval_low(node)) {
+			if (node->in_left) {
+				node = node->in_left;
+				continue;
+			}
+		} else if (interval_may_overlap(node, ext)) {
+			if (extent_overlapped(ext, &node->in_extent)) {
+				rc = func(node, data);
+				if (rc == INTERVAL_ITER_STOP)
+					break;
+			}
+
+			if (node->in_left) {
+				node = node->in_left;
+				continue;
+			}
+			if (node->in_right) {
+				node = node->in_right;
+				continue;
+			}
+		}
+
+		parent = node->in_parent;
+		while (parent) {
+			if (node_is_left_child(node) &&
+			    parent->in_right) {
+				/*
+				 * If we ever got the left, it means that the
+				 * parent met ext->end<interval_low(parent), or
+				 * may_overlap(parent). If the former is true,
+				 * we needn't go back. So stop early and check
+				 * may_overlap(parent) after this loop.
+				 */
+				node = parent->in_right;
+				break;
+			}
+			node = parent;
+			parent = parent->in_parent;
+		}
+		if (!parent || !interval_may_overlap(parent, ext))
+			break;
+	}
+
+	return rc;
+}
+EXPORT_SYMBOL(interval_search);

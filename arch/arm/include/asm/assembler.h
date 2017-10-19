@@ -87,6 +87,8 @@
 #define CALGN(code...)
 #endif
 
+#define IMM12_MASK 0xfff
+
 /*
  * Enable and disable interrupts
  */
@@ -159,7 +161,11 @@
 	.endm
 
 	.macro	save_and_disable_irqs_notrace, oldcpsr
+#ifdef CONFIG_CPU_V7M
+	mrs	\oldcpsr, primask
+#else
 	mrs	\oldcpsr, cpsr
+#endif
 	disable_irq_notrace
 	.endm
 

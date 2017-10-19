@@ -65,6 +65,7 @@
 #define KEYCTL_PKEY_DECRYPT		26	/* Decrypt a blob using a public key */
 #define KEYCTL_PKEY_SIGN		27	/* Create a public key signature */
 #define KEYCTL_PKEY_VERIFY		28	/* Verify a public key signature */
+#define KEYCTL_RESTRICT_KEYRING		29	/* Restrict keys allowed to link to a keyring */
 
 /* keyctl structures */
 struct keyctl_dh_params {
@@ -96,6 +97,13 @@ struct keyctl_pkey_params {
 		__u32		in2_len;	/* 2nd input data size (verify) */
 	};
 	__u32		__spare[7];
+};
+
+struct keyctl_kdf_params {
+	char __user *hashname;
+	char __user *otherinfo;
+	__u32 otherinfolen;
+	__u32 __spare[8];
 };
 
 #endif /*  _LINUX_KEYCTL_H */

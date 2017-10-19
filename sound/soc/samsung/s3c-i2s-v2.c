@@ -24,7 +24,6 @@
 
 #include "regs-i2s-v2.h"
 #include "s3c-i2s-v2.h"
-#include "dma.h"
 
 #undef S3C_IIS_V2_SUPPORTED
 
@@ -72,7 +71,6 @@ static inline void dbg_showcon(const char *fn, u32 con)
 {
 }
 #endif
-
 
 /* Turn on or off the transmission path. */
 static void s3c2412_snd_txctrl(struct s3c_i2sv2_info *i2s, int on)
@@ -302,7 +300,7 @@ static int s3c_i2sv2_hw_params(struct snd_pcm_substream *substream,
 				 struct snd_soc_dai *dai)
 {
 	struct s3c_i2sv2_info *i2s = to_info(dai);
-	struct s3c_dma_params *dma_data;
+	struct snd_dmaengine_dai_dma_data *dma_data;
 	u32 iismod;
 
 	pr_debug("Entered %s\n", __func__);

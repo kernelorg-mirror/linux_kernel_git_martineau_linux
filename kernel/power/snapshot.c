@@ -22,6 +22,7 @@
 #include <linux/device.h>
 #include <linux/init.h>
 #include <linux/bootmem.h>
+#include <linux/nmi.h>
 #include <linux/syscalls.h>
 #include <linux/console.h>
 #include <linux/highmem.h>
@@ -29,8 +30,9 @@
 #include <linux/slab.h>
 #include <linux/compiler.h>
 #include <linux/ktime.h>
+#include <linux/set_memory.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/mmu_context.h>
 #include <asm/pgtable.h>
 #include <asm/tlbflush.h>
@@ -38,7 +40,7 @@
 
 #include "power.h"
 
-#ifdef CONFIG_DEBUG_RODATA
+#if defined(CONFIG_STRICT_KERNEL_RWX) && defined(CONFIG_ARCH_HAS_SET_MEMORY)
 static bool hibernate_restore_protection;
 static bool hibernate_restore_protection_active;
 
@@ -73,7 +75,7 @@ static inline void hibernate_restore_protection_begin(void) {}
 static inline void hibernate_restore_protection_end(void) {}
 static inline void hibernate_restore_protect_page(void *page_address) {}
 static inline void hibernate_restore_unprotect_page(void *page_address) {}
-#endif /* CONFIG_DEBUG_RODATA */
+#endif /* CONFIG_STRICT_KERNEL_RWX  && CONFIG_ARCH_HAS_SET_MEMORY */
 
 static int swsusp_page_is_free(struct page *);
 static void swsusp_set_page_forbidden(struct page *);
@@ -835,9 +837,9 @@ static bool memory_bm_pfn_present(struct memory_bitmap *bm, unsigned long pfn)
  */
 static bool rtree_next_node(struct memory_bitmap *bm)
 {
-	bm->cur.node = list_entry(bm->cur.node->list.next,
-				  struct rtree_node, list);
-	if (&bm->cur.node->list != &bm->cur.zone->leaves) {
+	if (!list_is_last(&bm->cur.node->list, &bm->cur.zone->leaves)) {
+		bm->cur.node = list_entry(bm->cur.node->list.next,
+					  struct rtree_node, list);
 		bm->cur.node_pfn += BM_BITS_PER_BLOCK;
 		bm->cur.node_bit  = 0;
 		touch_softlockup_watchdog();
@@ -845,9 +847,9 @@ static bool rtree_next_node(struct memory_bitmap *bm)
 	}
 
 	/* No more nodes, goto next zone */
-	bm->cur.zone = list_entry(bm->cur.zone->list.next,
+	if (!list_is_last(&bm->cur.zone->list, &bm->zones)) {
+		bm->cur.zone = list_entry(bm->cur.zone->list.next,
 				  struct mem_zone_bm_rtree, list);
-	if (&bm->cur.zone->list != &bm->zones) {
 		bm->cur.node = list_entry(bm->cur.zone->leaves.next,
 					  struct rtree_node, list);
 		bm->cur.node_pfn = 0;
@@ -1132,6 +1134,28 @@ void free_basic_memory_bitmaps(void)
 	pr_debug("PM: Basic memory bitmaps freed\n");
 }
 
+void clear_free_pages(void)
+{
+#ifdef CONFIG_PAGE_POISONING_ZERO
+	struct memory_bitmap *bm = free_pages_map;
+	unsigned long pfn;
+
+	if (WARN_ON(!(free_pages_map)))
+		return;
+
+	memory_bm_position_reset(bm);
+	pfn = memory_bm_next_pfn(bm);
+	while (pfn != BM_END_OF_MAP) {
+		if (pfn_valid(pfn))
+			clear_highpage(pfn_to_page(pfn));
+
+		pfn = memory_bm_next_pfn(bm);
+	}
+	memory_bm_position_reset(bm);
+	pr_info("PM: free pages cleared after restore\n");
+#endif /* PAGE_POISONING_ZERO */
+}
+
 /**
  * snapshot_additional_pages - Estimate the number of extra pages needed.
  * @zone: Memory zone to carry out the computation for.
@@ -1399,7 +1423,7 @@ static unsigned int nr_meta_pages;
  * Numbers of normal and highmem page frames allocated for hibernation image
  * before suspending devices.
  */
-unsigned int alloc_normal, alloc_highmem;
+static unsigned int alloc_normal, alloc_highmem;
 /*
  * Memory bitmap used for marking saveable pages (during hibernation) or
  * hibernation image pages (during restore)
@@ -1626,7 +1650,7 @@ static unsigned long minimum_image_size(unsigned long saveable)
 {
 	unsigned long size;
 
-	size = global_page_state(NR_SLAB_RECLAIMABLE)
+	size = global_node_page_state(NR_SLAB_RECLAIMABLE)
 		+ global_node_page_state(NR_ACTIVE_ANON)
 		+ global_node_page_state(NR_INACTIVE_ANON)
 		+ global_node_page_state(NR_ACTIVE_FILE)
@@ -1903,8 +1927,7 @@ static inline unsigned int alloc_highmem_pages(struct memory_bitmap *bm,
  * also be located in the high memory, because of the way in which
  * copy_data_pages() works.
  */
-static int swsusp_alloc(struct memory_bitmap *orig_bm,
-			struct memory_bitmap *copy_bm,
+static int swsusp_alloc(struct memory_bitmap *copy_bm,
 			unsigned int nr_pages, unsigned int nr_highmem)
 {
 	if (nr_highmem > 0) {
@@ -1950,7 +1973,7 @@ asmlinkage __visible int swsusp_save(void)
 		return -ENOMEM;
 	}
 
-	if (swsusp_alloc(&orig_bm, &copy_bm, nr_pages, nr_highmem)) {
+	if (swsusp_alloc(&copy_bm, nr_pages, nr_highmem)) {
 		printk(KERN_ERR "PM: Memory allocation failed\n");
 		return -ENOMEM;
 	}

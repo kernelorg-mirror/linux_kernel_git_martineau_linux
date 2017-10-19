@@ -4,7 +4,7 @@
 
 / {
 
-	memory {
+	memory@80000000 {
 		device_type = "memory";
 		reg = <0x80000000 0x10000000>; /* 256 MB */
 	};
@@ -188,7 +188,7 @@
 	clock-frequency = <400000>;
 
 	at24@50 {
-		compatible = "at24,24c02";
+		compatible = "atmel,24c02";
 		pagesize = <16>;
 		reg = <0x50>;
 	};

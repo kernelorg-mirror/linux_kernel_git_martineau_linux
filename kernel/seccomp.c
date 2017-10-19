@@ -13,10 +13,12 @@
  *        of Berkeley Packet Filters/Linux Socket Filters.
  */
 
-#include <linux/atomic.h>
+#include <linux/refcount.h>
 #include <linux/audit.h>
 #include <linux/compat.h>
+#include <linux/coredump.h>
 #include <linux/sched.h>
+#include <linux/sched/task_stack.h>
 #include <linux/seccomp.h>
 #include <linux/slab.h>
 #include <linux/syscalls.h>
@@ -41,8 +43,7 @@
  *         outside of a lifetime-guarded section.  In general, this
  *         is only needed for handling filters shared across tasks.
  * @prev: points to a previously installed, or inherited, filter
- * @len: the number of instructions in the program
- * @insnsi: the BPF program instructions to evaluate
+ * @prog: the BPF program to evaluate
  *
  * seccomp_filter objects are organized in a tree linked via the @prev
  * pointer.  For any task, it appears to be a singly-linked list starting
@@ -55,7 +56,7 @@
  * to a task_struct (other than @usage).
  */
 struct seccomp_filter {
-	atomic_t usage;
+	refcount_t usage;
 	struct seccomp_filter *prev;
 	struct bpf_prog *prog;
 };
@@ -168,8 +169,8 @@ static int seccomp_check_filter(struct sock_filter *filter, unsigned int flen)
 }
 
 /**
- * seccomp_run_filters - evaluates all seccomp filters against @syscall
- * @syscall: number of the current system call
+ * seccomp_run_filters - evaluates all seccomp filters against @sd
+ * @sd: optional seccomp data to be passed to filters
  *
  * Returns valid seccomp BPF response codes.
  */
@@ -195,7 +196,7 @@ static u32 seccomp_run_filters(const struct seccomp_data *sd)
 	 * value always takes priority (ignoring the DATA).
 	 */
 	for (; f; f = f->prev) {
-		u32 cur_ret = BPF_PROG_RUN(f->prog, (void *)sd);
+		u32 cur_ret = BPF_PROG_RUN(f->prog, sd);
 
 		if ((cur_ret & SECCOMP_RET_ACTION) < (ret & SECCOMP_RET_ACTION))
 			ret = cur_ret;
@@ -377,7 +378,7 @@ static struct seccomp_filter *seccomp_prepare_filter(struct sock_fprog *fprog)
 		return ERR_PTR(ret);
 	}
 
-	atomic_set(&sfilter->usage, 1);
+	refcount_set(&sfilter->usage, 1);
 
 	return sfilter;
 }
@@ -457,14 +458,19 @@ static long seccomp_attach_filter(unsigned int flags,
 	return 0;
 }
 
+void __get_seccomp_filter(struct seccomp_filter *filter)
+{
+	/* Reference count is bounded by the number of total processes. */
+	refcount_inc(&filter->usage);
+}
+
 /* get_seccomp_filter - increments the reference count of the filter on @tsk */
 void get_seccomp_filter(struct task_struct *tsk)
 {
 	struct seccomp_filter *orig = tsk->seccomp.filter;
 	if (!orig)
 		return;
-	/* Reference count is bounded by the number of total processes. */
-	atomic_inc(&orig->usage);
+	__get_seccomp_filter(orig);
 }
 
 static inline void seccomp_filter_free(struct seccomp_filter *filter)
@@ -475,16 +481,31 @@ static inline void seccomp_filter_free(struct seccomp_filter *filter)
 	}
 }
 
-/* put_seccomp_filter - decrements the ref count of tsk->seccomp.filter */
-void put_seccomp_filter(struct task_struct *tsk)
+static void __put_seccomp_filter(struct seccomp_filter *orig)
 {
-	struct seccomp_filter *orig = tsk->seccomp.filter;
 	/* Clean up single-reference branches iteratively. */
-	while (orig && atomic_dec_and_test(&orig->usage)) {
+	while (orig && refcount_dec_and_test(&orig->usage)) {
 		struct seccomp_filter *freeme = orig;
 		orig = orig->prev;
 		seccomp_filter_free(freeme);
 	}
+}
+
+/* put_seccomp_filter - decrements the ref count of tsk->seccomp.filter */
+void put_seccomp_filter(struct task_struct *tsk)
+{
+	__put_seccomp_filter(tsk->seccomp.filter);
+}
+
+static void seccomp_init_siginfo(siginfo_t *info, int syscall, int reason)
+{
+	memset(info, 0, sizeof(*info));
+	info->si_signo = SIGSYS;
+	info->si_code = SYS_SECCOMP;
+	info->si_call_addr = (void __user *)KSTK_EIP(current);
+	info->si_errno = reason;
+	info->si_arch = syscall_get_arch();
+	info->si_syscall = syscall;
 }
 
 /**
@@ -497,13 +518,7 @@ void put_seccomp_filter(struct task_struct *tsk)
 static void seccomp_send_sigsys(int syscall, int reason)
 {
 	struct siginfo info;
-	memset(&info, 0, sizeof(info));
-	info.si_signo = SIGSYS;
-	info.si_code = SYS_SECCOMP;
-	info.si_call_addr = (void __user *)KSTK_EIP(current);
-	info.si_errno = reason;
-	info.si_arch = syscall_get_arch();
-	info.si_syscall = syscall;
+	seccomp_init_siginfo(&info, syscall, reason);
 	force_sig_info(SIGSYS, &info, current);
 }
 #endif	/* CONFIG_SECCOMP_FILTER */
@@ -605,12 +620,16 @@ static int __seccomp_filter(int this_syscall, const struct seccomp_data *sd,
 		ptrace_event(PTRACE_EVENT_SECCOMP, data);
 		/*
 		 * The delivery of a fatal signal during event
-		 * notification may silently skip tracer notification.
-		 * Terminating the task now avoids executing a system
-		 * call that may not be intended.
+		 * notification may silently skip tracer notification,
+		 * which could leave us with a potentially unmodified
+		 * syscall that the tracer would have liked to have
+		 * changed. Since the process is about to die, we just
+		 * force the syscall to be skipped and let the signal
+		 * kill the process and correctly handle any tracer exit
+		 * notifications.
 		 */
 		if (fatal_signal_pending(current))
-			do_exit(SIGSYS);
+			goto skip;
 		/* Check if the tracer forced the syscall to be skipped. */
 		this_syscall = syscall_get_nr(current, task_pt_regs(current));
 		if (this_syscall < 0)
@@ -633,6 +652,16 @@ static int __seccomp_filter(int this_syscall, const struct seccomp_data *sd,
 	case SECCOMP_RET_KILL:
 	default:
 		audit_seccomp(this_syscall, SIGSYS, action);
+		/* Dump core only if this is the last remaining thread. */
+		if (get_nr_threads(current) == 1) {
+			siginfo_t info;
+
+			/* Show the original registers in the dump. */
+			syscall_rollback(current, task_pt_regs(current));
+			/* Trigger a manual coredump since do_exit skips it. */
+			seccomp_init_siginfo(&info, this_syscall, data);
+			do_coredump(&info);
+		}
 		do_exit(SIGSYS);
 	}
 
@@ -888,13 +917,13 @@ long seccomp_get_filter(struct task_struct *task, unsigned long filter_off,
 	if (!data)
 		goto out;
 
-	get_seccomp_filter(task);
+	__get_seccomp_filter(filter);
 	spin_unlock_irq(&task->sighand->siglock);
 
 	if (copy_to_user(data, fprog->filter, bpf_classic_proglen(fprog)))
 		ret = -EFAULT;
 
-	put_seccomp_filter(task);
+	__put_seccomp_filter(filter);
 	return ret;
 
 out:

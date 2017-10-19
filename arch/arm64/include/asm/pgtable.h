@@ -52,7 +52,7 @@ extern void __pgd_error(const char *file, int line, unsigned long val);
  * for zero-mapped memory areas etc..
  */
 extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
-#define ZERO_PAGE(vaddr)	pfn_to_page(PHYS_PFN(__pa(empty_zero_page)))
+#define ZERO_PAGE(vaddr)	phys_to_page(__pa_symbol(empty_zero_page))
 
 #define pte_ERROR(pte)		__pte_error(__FILE__, __LINE__, pte_val(pte))
 
@@ -71,9 +71,18 @@ extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
 #define pte_young(pte)		(!!(pte_val(pte) & PTE_AF))
 #define pte_special(pte)	(!!(pte_val(pte) & PTE_SPECIAL))
 #define pte_write(pte)		(!!(pte_val(pte) & PTE_WRITE))
-#define pte_exec(pte)		(!(pte_val(pte) & PTE_UXN))
+#define pte_user_exec(pte)	(!(pte_val(pte) & PTE_UXN))
 #define pte_cont(pte)		(!!(pte_val(pte) & PTE_CONT))
-#define pte_user(pte)		(!!(pte_val(pte) & PTE_USER))
+
+#define pte_cont_addr_end(addr, end)						\
+({	unsigned long __boundary = ((addr) + CONT_PTE_SIZE) & CONT_PTE_MASK;	\
+	(__boundary - 1 < (end) - 1) ? __boundary : (end);			\
+})
+
+#define pmd_cont_addr_end(addr, end)						\
+({	unsigned long __boundary = ((addr) + CONT_PMD_SIZE) & CONT_PMD_MASK;	\
+	(__boundary - 1 < (end) - 1) ? __boundary : (end);			\
+})
 
 #ifdef CONFIG_ARM64_HW_AFDBM
 #define pte_hw_dirty(pte)	(pte_write(pte) && !(pte_val(pte) & PTE_RDONLY))
@@ -84,8 +93,12 @@ extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
 #define pte_dirty(pte)		(pte_sw_dirty(pte) || pte_hw_dirty(pte))
 
 #define pte_valid(pte)		(!!(pte_val(pte) & PTE_VALID))
+/*
+ * Execute-only user mappings do not have the PTE_USER bit set. All valid
+ * kernel mappings have the PTE_UXN bit set.
+ */
 #define pte_valid_not_user(pte) \
-	((pte_val(pte) & (PTE_VALID | PTE_USER)) == PTE_VALID)
+	((pte_val(pte) & (PTE_VALID | PTE_USER | PTE_UXN)) == (PTE_VALID | PTE_UXN))
 #define pte_valid_young(pte) \
 	((pte_val(pte) & (PTE_VALID | PTE_AF)) == (PTE_VALID | PTE_AF))
 
@@ -155,6 +168,16 @@ static inline pte_t pte_mknoncont(pte_t pte)
 	return clear_pte_bit(pte, __pgprot(PTE_CONT));
 }
 
+static inline pte_t pte_clear_rdonly(pte_t pte)
+{
+	return clear_pte_bit(pte, __pgprot(PTE_RDONLY));
+}
+
+static inline pte_t pte_mkpresent(pte_t pte)
+{
+	return set_pte_bit(pte, __pgprot(PTE_VALID));
+}
+
 static inline pmd_t pmd_mkcont(pmd_t pmd)
 {
 	return __pmd(pmd_val(pmd) | PMD_SECT_CONT);
@@ -202,7 +225,7 @@ static inline void set_pte_at(struct mm_struct *mm, unsigned long addr,
 			pte_val(pte) &= ~PTE_RDONLY;
 		else
 			pte_val(pte) |= PTE_RDONLY;
-		if (pte_user(pte) && pte_exec(pte) && !pte_special(pte))
+		if (pte_user_exec(pte) && !pte_special(pte))
 			__sync_icache_dcache(pte, addr);
 	}
 
@@ -389,7 +412,7 @@ static inline phys_addr_t pmd_page_paddr(pmd_t pmd)
 /* Find an entry in the third-level page table. */
 #define pte_index(addr)		(((addr) >> PAGE_SHIFT) & (PTRS_PER_PTE - 1))
 
-#define pte_offset_phys(dir,addr)	(pmd_page_paddr(*(dir)) + pte_index(addr) * sizeof(pte_t))
+#define pte_offset_phys(dir,addr)	(pmd_page_paddr(READ_ONCE(*(dir))) + pte_index(addr) * sizeof(pte_t))
 #define pte_offset_kernel(dir,addr)	((pte_t *)__va(pte_offset_phys((dir), (addr))))
 
 #define pte_offset_map(dir,addr)	pte_offset_kernel((dir), (addr))
@@ -418,7 +441,7 @@ static inline phys_addr_t pmd_page_paddr(pmd_t pmd)
 
 #define pud_none(pud)		(!pud_val(pud))
 #define pud_bad(pud)		(!(pud_val(pud) & PUD_TABLE_BIT))
-#define pud_present(pud)	(pud_val(pud))
+#define pud_present(pud)	pte_present(pud_pte(pud))
 
 static inline void set_pud(pud_t *pudp, pud_t pud)
 {

@@ -26,7 +26,7 @@
 
 #include <linux/interrupt.h>
 #include <asm/acpi.h>
-#include <asm/e820.h>
+#include <asm/e820/api.h>
 
 static void noop_init_apic_ldr(void) { }
 static void noop_send_IPI(int cpu, int vector) { }
@@ -108,7 +108,7 @@ static void noop_apic_write(u32 reg, u32 v)
 	WARN_ON_ONCE(boot_cpu_has(X86_FEATURE_APIC) && !disable_apic);
 }
 
-struct apic apic_noop = {
+struct apic apic_noop __ro_after_init = {
 	.name				= "noop",
 	.probe				= noop_probe,
 	.acpi_madt_oem_check		= NULL,
@@ -141,7 +141,7 @@ struct apic apic_noop = {
 	.get_apic_id			= noop_get_apic_id,
 	.set_apic_id			= NULL,
 
-	.cpu_mask_to_apicid_and		= flat_cpu_mask_to_apicid_and,
+	.cpu_mask_to_apicid		= flat_cpu_mask_to_apicid,
 
 	.send_IPI			= noop_send_IPI,
 	.send_IPI_mask			= noop_send_IPI_mask,

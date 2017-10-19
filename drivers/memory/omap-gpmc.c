@@ -350,8 +350,8 @@ static unsigned int gpmc_ps_to_ticks(unsigned int time_ps)
 	return (time_ps + tick_ps - 1) / tick_ps;
 }
 
-unsigned int gpmc_clk_ticks_to_ns(unsigned ticks, int cs,
-				  enum gpmc_clk_domain cd)
+static unsigned int gpmc_clk_ticks_to_ns(unsigned int ticks, int cs,
+					 enum gpmc_clk_domain cd)
 {
 	return ticks * gpmc_get_clk_period(cs, cd) / 1000;
 }
@@ -460,12 +460,12 @@ static int get_gpmc_timing_reg(
 		if (l)
 			time_ns_min = gpmc_clk_ticks_to_ns(l - 1, cs, cd) + 1;
 		time_ns = gpmc_clk_ticks_to_ns(l, cs, cd);
-		pr_info("gpmc,%s = <%u> /* %u ns - %u ns; %i ticks%s*/\n",
+		pr_info("gpmc,%s = <%u>; /* %u ns - %u ns; %i ticks%s*/\n",
 			name, time_ns, time_ns_min, time_ns, l,
 			invalid ? "; invalid " : " ");
 	} else {
 		/* raw format */
-		pr_info("gpmc,%s = <%u>%s\n", name, l,
+		pr_info("gpmc,%s = <%u>;%s\n", name, l,
 			invalid ? " /* invalid */" : "");
 	}
 
@@ -512,7 +512,7 @@ static void gpmc_cs_show_timings(int cs, const char *desc)
 	pr_info("gpmc cs%i access configuration:\n", cs);
 	GPMC_GET_RAW_BOOL(GPMC_CS_CONFIG1,  4,  4, "time-para-granularity");
 	GPMC_GET_RAW(GPMC_CS_CONFIG1,  8,  9, "mux-add-data");
-	GPMC_GET_RAW_MAX(GPMC_CS_CONFIG1, 12, 13,
+	GPMC_GET_RAW_SHIFT_MAX(GPMC_CS_CONFIG1, 12, 13, 1,
 			 GPMC_CONFIG1_DEVICESIZE_MAX, "device-width");
 	GPMC_GET_RAW(GPMC_CS_CONFIG1, 16, 17, "wait-pin");
 	GPMC_GET_RAW_BOOL(GPMC_CS_CONFIG1, 21, 21, "wait-on-write");
@@ -1947,9 +1947,7 @@ static int gpmc_probe_onenand_child(struct platform_device *pdev,
 	if (!of_property_read_u32(child, "dma-channel", &val))
 		gpmc_onenand_data->dma_channel = val;
 
-	gpmc_onenand_init(gpmc_onenand_data);
-
-	return 0;
+	return gpmc_onenand_init(gpmc_onenand_data);
 }
 #else
 static int gpmc_probe_onenand_child(struct platform_device *pdev,
@@ -2085,8 +2083,11 @@ static int gpmc_probe_generic_child(struct platform_device *pdev,
 	} else {
 		ret = of_property_read_u32(child, "bank-width",
 					   &gpmc_s.device_width);
-		if (ret < 0)
+		if (ret < 0) {
+			dev_err(&pdev->dev, "%s has no 'bank-width' property\n",
+				child->full_name);
 			goto err;
+		}
 	}
 
 	/* Reserve wait pin if it is required and valid */
@@ -2143,9 +2144,7 @@ err_child_fail:
 	ret = -ENODEV;
 
 err_cs:
-	if (waitpin_desc)
-		gpiochip_free_own_desc(waitpin_desc);
-
+	gpiochip_free_own_desc(waitpin_desc);
 err:
 	gpmc_cs_free(cs);
 
@@ -2185,7 +2184,7 @@ static int gpmc_probe_dt(struct platform_device *pdev)
 	return 0;
 }
 
-static int gpmc_probe_dt_children(struct platform_device *pdev)
+static void gpmc_probe_dt_children(struct platform_device *pdev)
 {
 	int ret;
 	struct device_node *child;
@@ -2200,11 +2199,11 @@ static int gpmc_probe_dt_children(struct platform_device *pdev)
 		else
 			ret = gpmc_probe_generic_child(pdev, child);
 
-		if (ret)
-			return ret;
+		if (ret) {
+			dev_err(&pdev->dev, "failed to probe DT child '%s': %d\n",
+				child->name, ret);
+		}
 	}
-
-	return 0;
 }
 #else
 static int gpmc_probe_dt(struct platform_device *pdev)
@@ -2212,9 +2211,8 @@ static int gpmc_probe_dt(struct platform_device *pdev)
 	return 0;
 }
 
-static int gpmc_probe_dt_children(struct platform_device *pdev)
+static void gpmc_probe_dt_children(struct platform_device *pdev)
 {
-	return 0;
 }
 #endif /* CONFIG_OF */
 
@@ -2266,18 +2264,13 @@ static int gpmc_gpio_init(struct gpmc_device *gpmc)
 	gpmc->gpio_chip.get = gpmc_gpio_get;
 	gpmc->gpio_chip.base = -1;
 
-	ret = gpiochip_add(&gpmc->gpio_chip);
+	ret = devm_gpiochip_add_data(gpmc->dev, &gpmc->gpio_chip, NULL);
 	if (ret < 0) {
 		dev_err(gpmc->dev, "could not register gpio chip: %d\n", ret);
 		return ret;
 	}
 
 	return 0;
-}
-
-static void gpmc_gpio_exit(struct gpmc_device *gpmc)
-{
-	gpiochip_remove(&gpmc->gpio_chip);
 }
 
 static int gpmc_probe(struct platform_device *pdev)
@@ -2366,21 +2359,13 @@ static int gpmc_probe(struct platform_device *pdev)
 	rc = gpmc_setup_irq(gpmc);
 	if (rc) {
 		dev_err(gpmc->dev, "gpmc_setup_irq failed\n");
-		goto setup_irq_failed;
+		goto gpio_init_failed;
 	}
 
-	rc = gpmc_probe_dt_children(pdev);
-	if (rc < 0) {
-		dev_err(gpmc->dev, "failed to probe DT children\n");
-		goto dt_children_failed;
-	}
+	gpmc_probe_dt_children(pdev);
 
 	return 0;
 
-dt_children_failed:
-	gpmc_free_irq(gpmc);
-setup_irq_failed:
-	gpmc_gpio_exit(gpmc);
 gpio_init_failed:
 	gpmc_mem_exit();
 	pm_runtime_put_sync(&pdev->dev);
@@ -2394,7 +2379,6 @@ static int gpmc_remove(struct platform_device *pdev)
 	struct gpmc_device *gpmc = platform_get_drvdata(pdev);
 
 	gpmc_free_irq(gpmc);
-	gpmc_gpio_exit(gpmc);
 	gpmc_mem_exit();
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);

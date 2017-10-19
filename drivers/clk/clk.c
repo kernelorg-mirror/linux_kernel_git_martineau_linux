@@ -966,6 +966,8 @@ static int __clk_notify(struct clk_core *core, unsigned long msg,
 			cnd.clk = cn->clk;
 			ret = srcu_notifier_call_chain(&cn->notifier_head, msg,
 					&cnd);
+			if (ret & NOTIFY_STOP_MASK)
+				return ret;
 		}
 	}
 
@@ -1908,10 +1910,6 @@ int clk_set_phase(struct clk *clk, int degrees)
 
 	clk_prepare_lock();
 
-	/* bail early if nothing to do */
-	if (degrees == clk->core->phase)
-		goto out;
-
 	trace_clk_set_phase(clk->core, degrees);
 
 	if (clk->core->ops->set_phase)
@@ -1922,7 +1920,6 @@ int clk_set_phase(struct clk *clk, int degrees)
 	if (!ret)
 		clk->core->phase = degrees;
 
-out:
 	clk_prepare_unlock();
 
 	return ret;
@@ -2086,11 +2083,11 @@ static void clk_dump_subtree(struct seq_file *s, struct clk_core *c, int level)
 	clk_dump_one(s, c, level);
 
 	hlist_for_each_entry(child, &c->children, child_node) {
-		seq_printf(s, ",");
+		seq_putc(s, ',');
 		clk_dump_subtree(s, child, level + 1);
 	}
 
-	seq_printf(s, "}");
+	seq_putc(s, '}');
 }
 
 static int clk_dump(struct seq_file *s, void *data)
@@ -2099,14 +2096,13 @@ static int clk_dump(struct seq_file *s, void *data)
 	bool first_node = true;
 	struct hlist_head **lists = (struct hlist_head **)s->private;
 
-	seq_printf(s, "{");
-
+	seq_putc(s, '{');
 	clk_prepare_lock();
 
 	for (; *lists; lists++) {
 		hlist_for_each_entry(c, *lists, child_node) {
 			if (!first_node)
-				seq_puts(s, ",");
+				seq_putc(s, ',');
 			first_node = false;
 			clk_dump_subtree(s, c, 0);
 		}
@@ -2126,6 +2122,31 @@ static int clk_dump_open(struct inode *inode, struct file *file)
 
 static const struct file_operations clk_dump_fops = {
 	.open		= clk_dump_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int possible_parents_dump(struct seq_file *s, void *data)
+{
+	struct clk_core *core = s->private;
+	int i;
+
+	for (i = 0; i < core->num_parents - 1; i++)
+		seq_printf(s, "%s ", core->parent_names[i]);
+
+	seq_printf(s, "%s\n", core->parent_names[i]);
+
+	return 0;
+}
+
+static int possible_parents_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, possible_parents_dump, inode->i_private);
+}
+
+static const struct file_operations possible_parents_fops = {
+	.open		= possible_parents_open,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
 	.release	= single_release,
@@ -2181,6 +2202,13 @@ static int clk_debug_create_one(struct clk_core *core, struct dentry *pdentry)
 			(u32 *)&core->notifier_count);
 	if (!d)
 		goto err_out;
+
+	if (core->num_parents > 1) {
+		d = debugfs_create_file("clk_possible_parents", S_IRUGO,
+				core->dentry, core, &possible_parents_fops);
+		if (!d)
+			goto err_out;
+	}
 
 	if (core->ops->debug_init) {
 		ret = core->ops->debug_init(core->hw, core->dentry);
@@ -2449,8 +2477,16 @@ static int __clk_core_init(struct clk_core *core)
 	hlist_for_each_entry_safe(orphan, tmp2, &clk_orphan_list, child_node) {
 		struct clk_core *parent = __clk_init_parent(orphan);
 
-		if (parent)
-			clk_core_reparent(orphan, parent);
+		/*
+		 * we could call __clk_set_parent, but that would result in a
+		 * redundant call to the .set_rate op, if it exists
+		 */
+		if (parent) {
+			__clk_set_parent_before(orphan, parent);
+			__clk_set_parent_after(orphan, parent, NULL);
+			__clk_recalc_accuracies(orphan);
+			__clk_recalc_rates(orphan, 0);
+		}
 	}
 
 	/*
@@ -2491,7 +2527,7 @@ struct clk *__clk_create_clk(struct clk_hw *hw, const char *dev_id,
 
 	/* This is to allow this function to be chained to others */
 	if (IS_ERR_OR_NULL(hw))
-		return (struct clk *) hw;
+		return ERR_CAST(hw);
 
 	clk = kzalloc(sizeof(*clk), GFP_KERNEL);
 	if (!clk)
@@ -2499,7 +2535,7 @@ struct clk *__clk_create_clk(struct clk_hw *hw, const char *dev_id,
 
 	clk->core = hw->core;
 	clk->dev_id = dev_id;
-	clk->con_id = con_id;
+	clk->con_id = kstrdup_const(con_id, GFP_KERNEL);
 	clk->max_rate = ULONG_MAX;
 
 	clk_prepare_lock();
@@ -2515,6 +2551,7 @@ void __clk_free_clk(struct clk *clk)
 	hlist_del(&clk->clks_node);
 	clk_prepare_unlock();
 
+	kfree_const(clk->con_id);
 	kfree(clk);
 }
 
@@ -2936,7 +2973,7 @@ int clk_notifier_register(struct clk *clk, struct notifier_block *nb)
 
 	/* if clk wasn't in the notifier list, allocate new clk_notifier */
 	if (cn->clk != clk) {
-		cn = kzalloc(sizeof(struct clk_notifier), GFP_KERNEL);
+		cn = kzalloc(sizeof(*cn), GFP_KERNEL);
 		if (!cn)
 			goto out;
 
@@ -3084,7 +3121,7 @@ int of_clk_add_provider(struct device_node *np,
 	struct of_clk_provider *cp;
 	int ret;
 
-	cp = kzalloc(sizeof(struct of_clk_provider), GFP_KERNEL);
+	cp = kzalloc(sizeof(*cp), GFP_KERNEL);
 	if (!cp)
 		return -ENOMEM;
 
@@ -3166,19 +3203,14 @@ __of_clk_get_hw_from_provider(struct of_clk_provider *provider,
 			      struct of_phandle_args *clkspec)
 {
 	struct clk *clk;
-	struct clk_hw *hw = ERR_PTR(-EPROBE_DEFER);
 
-	if (provider->get_hw) {
-		hw = provider->get_hw(clkspec, provider->data);
-	} else if (provider->get) {
-		clk = provider->get(clkspec, provider->data);
-		if (!IS_ERR(clk))
-			hw = __clk_get_hw(clk);
-		else
-			hw = ERR_CAST(clk);
-	}
+	if (provider->get_hw)
+		return provider->get_hw(clkspec, provider->data);
 
-	return hw;
+	clk = provider->get(clkspec, provider->data);
+	if (IS_ERR(clk))
+		return ERR_CAST(clk);
+	return __clk_get_hw(clk);
 }
 
 struct clk *__of_clk_get_from_provider(struct of_phandle_args *clkspec,
@@ -3186,7 +3218,7 @@ struct clk *__of_clk_get_from_provider(struct of_phandle_args *clkspec,
 {
 	struct of_clk_provider *provider;
 	struct clk *clk = ERR_PTR(-EPROBE_DEFER);
-	struct clk_hw *hw = ERR_PTR(-EPROBE_DEFER);
+	struct clk_hw *hw;
 
 	if (!clkspec)
 		return ERR_PTR(-EINVAL);
@@ -3194,12 +3226,13 @@ struct clk *__of_clk_get_from_provider(struct of_phandle_args *clkspec,
 	/* Check if we have such a provider in our array */
 	mutex_lock(&of_clk_mutex);
 	list_for_each_entry(provider, &of_clk_providers, link) {
-		if (provider->node == clkspec->np)
+		if (provider->node == clkspec->np) {
 			hw = __of_clk_get_hw_from_provider(provider, clkspec);
-		if (!IS_ERR(hw)) {
 			clk = __clk_create_clk(hw, dev_id, con_id);
+		}
 
-			if (!IS_ERR(clk) && !__clk_get(clk)) {
+		if (!IS_ERR(clk)) {
+			if (!__clk_get(clk)) {
 				__clk_free_clk(clk);
 				clk = ERR_PTR(-ENOENT);
 			}
@@ -3450,6 +3483,10 @@ void __init of_clk_init(const struct of_device_id *matches)
 		list_for_each_entry_safe(clk_provider, next,
 					&clk_provider_list, node) {
 			if (force || parent_ready(clk_provider->np)) {
+
+				/* Don't populate platform devices */
+				of_node_set_flag(clk_provider->np,
+						 OF_POPULATED);
 
 				clk_provider->clk_init_cb(clk_provider->np);
 				of_clk_set_defaults(clk_provider->np, true);

@@ -651,6 +651,7 @@ void xprt_force_disconnect(struct rpc_xprt *xprt)
 	xprt_wake_pending_tasks(xprt, -EAGAIN);
 	spin_unlock_bh(&xprt->transport_lock);
 }
+EXPORT_SYMBOL_GPL(xprt_force_disconnect);
 
 /**
  * xprt_conditional_disconnect - force a transport to disconnect
@@ -669,7 +670,7 @@ void xprt_conditional_disconnect(struct rpc_xprt *xprt, unsigned int cookie)
 	spin_lock_bh(&xprt->transport_lock);
 	if (cookie != xprt->connect_cookie)
 		goto out;
-	if (test_bit(XPRT_CLOSING, &xprt->state) || !xprt_connected(xprt))
+	if (test_bit(XPRT_CLOSING, &xprt->state))
 		goto out;
 	set_bit(XPRT_CLOSE_WAIT, &xprt->state);
 	/* Try to schedule an autoclose RPC call */
@@ -680,6 +681,20 @@ out:
 	spin_unlock_bh(&xprt->transport_lock);
 }
 
+static bool
+xprt_has_timer(const struct rpc_xprt *xprt)
+{
+	return xprt->idle_timeout != 0;
+}
+
+static void
+xprt_schedule_autodisconnect(struct rpc_xprt *xprt)
+	__must_hold(&xprt->transport_lock)
+{
+	if (list_empty(&xprt->recv) && xprt_has_timer(xprt))
+		mod_timer(&xprt->timer, xprt->last_used + xprt->idle_timeout);
+}
+
 static void
 xprt_init_autodisconnect(unsigned long data)
 {
@@ -688,6 +703,8 @@ xprt_init_autodisconnect(unsigned long data)
 	spin_lock(&xprt->transport_lock);
 	if (!list_empty(&xprt->recv))
 		goto out_abort;
+	/* Reset xprt->last_used to avoid connect/autodisconnect cycling */
+	xprt->last_used = jiffies;
 	if (test_and_set_bit(XPRT_LOCKED, &xprt->state))
 		goto out_abort;
 	spin_unlock(&xprt->transport_lock);
@@ -725,6 +742,7 @@ void xprt_unlock_connect(struct rpc_xprt *xprt, void *cookie)
 		goto out;
 	xprt->snd_task =NULL;
 	xprt->ops->release_xprt(xprt, NULL);
+	xprt_schedule_autodisconnect(xprt);
 out:
 	spin_unlock_bh(&xprt->transport_lock);
 	wake_up_bit(&xprt->state, XPRT_LOCKED);
@@ -755,6 +773,7 @@ void xprt_connect(struct rpc_task *task)
 	if (!xprt_connected(xprt)) {
 		task->tk_rqstp->rq_bytes_sent = 0;
 		task->tk_timeout = task->tk_rqstp->rq_timeout;
+		task->tk_rqstp->rq_connect_cookie = xprt->connect_cookie;
 		rpc_sleep_on(&xprt->pending, task, xprt_connect_status);
 
 		if (test_bit(XPRT_CLOSING, &xprt->state))
@@ -879,18 +898,11 @@ static void xprt_timer(struct rpc_task *task)
 		return;
 	dprintk("RPC: %5u xprt_timer\n", task->tk_pid);
 
-	spin_lock_bh(&xprt->transport_lock);
 	if (!req->rq_reply_bytes_recvd) {
 		if (xprt->ops->timer)
 			xprt->ops->timer(xprt, task);
 	} else
 		task->tk_status = 0;
-	spin_unlock_bh(&xprt->transport_lock);
-}
-
-static inline int xprt_has_timer(struct rpc_xprt *xprt)
-{
-	return xprt->idle_timeout != 0;
 }
 
 /**
@@ -1035,13 +1047,15 @@ out:
 	return ret;
 }
 
-static struct rpc_rqst *xprt_dynamic_alloc_slot(struct rpc_xprt *xprt, gfp_t gfp_flags)
+static struct rpc_rqst *xprt_dynamic_alloc_slot(struct rpc_xprt *xprt)
 {
 	struct rpc_rqst *req = ERR_PTR(-EAGAIN);
 
 	if (!atomic_add_unless(&xprt->num_reqs, 1, xprt->max_reqs))
 		goto out;
-	req = kzalloc(sizeof(struct rpc_rqst), gfp_flags);
+	spin_unlock(&xprt->reserve_lock);
+	req = kzalloc(sizeof(struct rpc_rqst), GFP_NOFS);
+	spin_lock(&xprt->reserve_lock);
 	if (req != NULL)
 		goto out;
 	atomic_dec(&xprt->num_reqs);
@@ -1069,7 +1083,7 @@ void xprt_alloc_slot(struct rpc_xprt *xprt, struct rpc_task *task)
 		list_del(&req->rq_list);
 		goto out_init_req;
 	}
-	req = xprt_dynamic_alloc_slot(xprt, GFP_NOWAIT|__GFP_NOWARN);
+	req = xprt_dynamic_alloc_slot(xprt);
 	if (!IS_ERR(req))
 		goto out_init_req;
 	switch (PTR_ERR(req)) {
@@ -1280,12 +1294,10 @@ void xprt_release(struct rpc_task *task)
 	if (!list_empty(&req->rq_list))
 		list_del(&req->rq_list);
 	xprt->last_used = jiffies;
-	if (list_empty(&xprt->recv) && xprt_has_timer(xprt))
-		mod_timer(&xprt->timer,
-				xprt->last_used + xprt->idle_timeout);
+	xprt_schedule_autodisconnect(xprt);
 	spin_unlock_bh(&xprt->transport_lock);
 	if (req->rq_buffer)
-		xprt->ops->buf_free(req->rq_buffer);
+		xprt->ops->buf_free(task);
 	xprt_inject_disconnect(xprt);
 	if (req->rq_cred != NULL)
 		put_rpccred(req->rq_cred);

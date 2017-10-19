@@ -149,21 +149,17 @@ static void put_io_block(struct log_writes_c *lc)
 static void log_end_io(struct bio *bio)
 {
 	struct log_writes_c *lc = bio->bi_private;
-	struct bio_vec *bvec;
-	int i;
 
-	if (bio->bi_error) {
+	if (bio->bi_status) {
 		unsigned long flags;
 
-		DMERR("Error writing log block, error=%d", bio->bi_error);
+		DMERR("Error writing log block, error=%d", bio->bi_status);
 		spin_lock_irqsave(&lc->blocks_lock, flags);
 		lc->logging_enabled = false;
 		spin_unlock_irqrestore(&lc->blocks_lock, flags);
 	}
 
-	bio_for_each_segment_all(bvec, bio, i)
-		__free_page(bvec->bv_page);
-
+	bio_free_pages(bio);
 	put_io_block(lc);
 	bio_put(bio);
 }
@@ -259,12 +255,12 @@ static int log_one_block(struct log_writes_c *lc,
 		goto out;
 	sector++;
 
-	bio = bio_alloc(GFP_KERNEL, block->vec_cnt);
+	atomic_inc(&lc->io_blocks);
+	bio = bio_alloc(GFP_KERNEL, min(block->vec_cnt, BIO_MAX_PAGES));
 	if (!bio) {
 		DMERR("Couldn't alloc log bio");
 		goto error;
 	}
-	atomic_inc(&lc->io_blocks);
 	bio->bi_iter.bi_size = 0;
 	bio->bi_iter.bi_sector = sector;
 	bio->bi_bdev = lc->logdev->bdev;
@@ -282,7 +278,7 @@ static int log_one_block(struct log_writes_c *lc,
 		if (ret != block->vecs[i].bv_len) {
 			atomic_inc(&lc->io_blocks);
 			submit_bio(bio);
-			bio = bio_alloc(GFP_KERNEL, block->vec_cnt - i);
+			bio = bio_alloc(GFP_KERNEL, min(block->vec_cnt - i, BIO_MAX_PAGES));
 			if (!bio) {
 				DMERR("Couldn't alloc log bio");
 				goto error;
@@ -459,9 +455,9 @@ static int log_writes_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto bad;
 	}
 
-	ret = -EINVAL;
 	lc->log_kthread = kthread_run(log_writes_kthread, lc, "log-write");
-	if (!lc->log_kthread) {
+	if (IS_ERR(lc->log_kthread)) {
+		ret = PTR_ERR(lc->log_kthread);
 		ti->error = "Couldn't alloc kthread";
 		dm_put_device(ti, lc->dev);
 		dm_put_device(ti, lc->logdev);
@@ -590,7 +586,7 @@ static int log_writes_map(struct dm_target *ti, struct bio *bio)
 		spin_lock_irq(&lc->blocks_lock);
 		lc->logging_enabled = false;
 		spin_unlock_irq(&lc->blocks_lock);
-		return -ENOMEM;
+		return DM_MAPIO_KILL;
 	}
 	INIT_LIST_HEAD(&block->list);
 	pb->block = block;
@@ -643,7 +639,7 @@ static int log_writes_map(struct dm_target *ti, struct bio *bio)
 			spin_lock_irq(&lc->blocks_lock);
 			lc->logging_enabled = false;
 			spin_unlock_irq(&lc->blocks_lock);
-			return -ENOMEM;
+			return DM_MAPIO_KILL;
 		}
 
 		src = kmap_atomic(bv.bv_page);
@@ -668,7 +664,8 @@ map_bio:
 	return DM_MAPIO_REMAPPED;
 }
 
-static int normal_end_io(struct dm_target *ti, struct bio *bio, int error)
+static int normal_end_io(struct dm_target *ti, struct bio *bio,
+		blk_status_t *error)
 {
 	struct log_writes_c *lc = ti->private;
 	struct per_bio_data *pb = dm_per_bio_data(bio, sizeof(struct per_bio_data));
@@ -690,7 +687,7 @@ static int normal_end_io(struct dm_target *ti, struct bio *bio, int error)
 		spin_unlock_irqrestore(&lc->blocks_lock, flags);
 	}
 
-	return error;
+	return DM_ENDIO_DONE;
 }
 
 /*

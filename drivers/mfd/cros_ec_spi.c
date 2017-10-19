@@ -45,8 +45,11 @@
  * on the other end and need to transfer ~256 bytes, then we need:
  *  10 us/bit * ~10 bits/byte * ~256 bytes = ~25ms
  *
- * We'll wait 4 times that to handle clock stretching and other
- * paranoia.
+ * We'll wait 8 times that to handle clock stretching and other
+ * paranoia.  Note that some battery gas gauge ICs claim to have a
+ * clock stretch of 144ms in rare situations.  That's incentive for
+ * not directly passing i2c through, but it's too late for that for
+ * existing hardware.
  *
  * It's pretty unlikely that we'll really see a 249 byte tunnel in
  * anything other than testing.  If this was more common we might
@@ -54,7 +57,7 @@
  * wait loop.  The 'flash write' command would be another candidate
  * for this, clocking in at 2-3ms.
  */
-#define EC_MSG_DEADLINE_MS		100
+#define EC_MSG_DEADLINE_MS		200
 
 /*
   * Time between raising the SPI chip select (for the end of a
@@ -366,7 +369,6 @@ static int cros_ec_spi_receive_response(struct cros_ec_device *ec_dev,
 static int cros_ec_pkt_xfer_spi(struct cros_ec_device *ec_dev,
 				struct cros_ec_command *ec_msg)
 {
-	struct ec_host_request *request;
 	struct ec_host_response *response;
 	struct cros_ec_spi *ec_spi = ec_dev->priv;
 	struct spi_transfer trans, trans_delay;
@@ -378,7 +380,6 @@ static int cros_ec_pkt_xfer_spi(struct cros_ec_device *ec_dev,
 	int ret = 0, final_ret;
 
 	len = cros_ec_prepare_tx(ec_dev, ec_msg);
-	request = (struct ec_host_request *)ec_dev->dout;
 	dev_dbg(ec_dev->dev, "prepared, len=%d\n", len);
 
 	/* If it's too soon to do another transaction, wait */

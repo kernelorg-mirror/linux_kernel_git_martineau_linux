@@ -397,7 +397,7 @@ static int flctl_dma_fifo0_transfer(struct sh_flctl *flctl, unsigned long *buf,
 	struct dma_chan *chan;
 	enum dma_transfer_direction tr_dir;
 	dma_addr_t dma_addr;
-	dma_cookie_t cookie = -EINVAL;
+	dma_cookie_t cookie;
 	uint32_t reg;
 	int ret;
 
@@ -423,6 +423,12 @@ static int flctl_dma_fifo0_transfer(struct sh_flctl *flctl, unsigned long *buf,
 		desc->callback = flctl_dma_complete;
 		desc->callback_param = flctl;
 		cookie = dmaengine_submit(desc);
+		if (dma_submit_error(cookie)) {
+			ret = dma_submit_error(cookie);
+			dev_warn(&flctl->pdev->dev,
+				 "DMA submit failed, falling back to PIO\n");
+			goto out;
+		}
 
 		dma_async_issue_pending(chan);
 	} else {
@@ -1177,6 +1183,8 @@ static int flctl_probe(struct platform_device *pdev)
 	nand->read_buf = flctl_read_buf;
 	nand->select_chip = flctl_select_chip;
 	nand->cmdfunc = flctl_cmdfunc;
+	nand->onfi_set_features = nand_onfi_get_set_features_notsupp;
+	nand->onfi_get_features = nand_onfi_get_set_features_notsupp;
 
 	if (pdata->flcmncr_val & SEL_16BIT)
 		nand->options |= NAND_BUSWIDTH_16;

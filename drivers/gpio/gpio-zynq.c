@@ -96,6 +96,9 @@
 /* GPIO upper 16 bit mask */
 #define ZYNQ_GPIO_UPPER_MASK 0xFFFF0000
 
+/* set to differentiate zynq from zynqmp, 0=zynqmp, 1=zynq */
+#define ZYNQ_GPIO_QUIRK_IS_ZYNQ	BIT(0)
+
 /**
  * struct zynq_gpio - gpio device private data structure
  * @chip:	instance of the gpio_chip
@@ -122,6 +125,7 @@ struct zynq_gpio {
 */
 struct zynq_platform_data {
 	const char *label;
+	u32 quirks;
 	u16 ngpio;
 	int max_bank;
 	int bank_min[ZYNQMP_GPIO_MAX_BANK];
@@ -130,6 +134,17 @@ struct zynq_platform_data {
 
 static struct irq_chip zynq_gpio_level_irqchip;
 static struct irq_chip zynq_gpio_edge_irqchip;
+
+/**
+ * zynq_gpio_is_zynq - test if HW is zynq or zynqmp
+ * @gpio:	Pointer to driver data struct
+ *
+ * Return: 0 if zynqmp, 1 if zynq.
+ */
+static int zynq_gpio_is_zynq(struct zynq_gpio *gpio)
+{
+	return !!(gpio->p_data->quirks & ZYNQ_GPIO_QUIRK_IS_ZYNQ);
+}
 
 /**
  * zynq_gpio_get_bank_pin - Get the bank number and pin number within that bank
@@ -243,8 +258,12 @@ static int zynq_gpio_dir_in(struct gpio_chip *chip, unsigned int pin)
 
 	zynq_gpio_get_bank_pin(pin, &bank_num, &bank_pin_num, gpio);
 
-	/* bank 0 pins 7 and 8 are special and cannot be used as inputs */
-	if (bank_num == 0 && (bank_pin_num == 7 || bank_pin_num == 8))
+	/*
+	 * On zynq bank 0 pins 7 and 8 are special and cannot be used
+	 * as inputs.
+	 */
+	if (zynq_gpio_is_zynq(gpio) && bank_num == 0 &&
+		(bank_pin_num == 7 || bank_pin_num == 8))
 		return -EINVAL;
 
 	/* clear the bit in direction mode reg to set the pin as input */
@@ -627,6 +646,7 @@ static const struct zynq_platform_data zynqmp_gpio_def = {
 
 static const struct zynq_platform_data zynq_gpio_def = {
 	.label = "zynq_gpio",
+	.quirks = ZYNQ_GPIO_QUIRK_IS_ZYNQ,
 	.ngpio = ZYNQ_GPIO_NR_GPIOS,
 	.max_bank = ZYNQ_GPIO_MAX_BANK,
 	.bank_min[0] = ZYNQ_GPIO_BANK0_PIN_MIN(),
@@ -640,9 +660,8 @@ static const struct zynq_platform_data zynq_gpio_def = {
 };
 
 static const struct of_device_id zynq_gpio_of_match[] = {
-	{ .compatible = "xlnx,zynq-gpio-1.0", .data = (void *)&zynq_gpio_def },
-	{ .compatible = "xlnx,zynqmp-gpio-1.0",
-					.data = (void *)&zynqmp_gpio_def },
+	{ .compatible = "xlnx,zynq-gpio-1.0", .data = &zynq_gpio_def },
+	{ .compatible = "xlnx,zynqmp-gpio-1.0", .data = &zynqmp_gpio_def },
 	{ /* end of table */ }
 };
 MODULE_DEVICE_TABLE(of, zynq_gpio_of_match);

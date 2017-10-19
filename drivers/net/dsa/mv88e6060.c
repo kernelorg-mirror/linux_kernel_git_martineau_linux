@@ -19,7 +19,7 @@
 
 static int reg_read(struct dsa_switch *ds, int addr, int reg)
 {
-	struct mv88e6060_priv *priv = ds_to_priv(ds);
+	struct mv88e6060_priv *priv = ds->priv;
 
 	return mdiobus_read_nested(priv->bus, priv->sw_addr + addr, reg);
 }
@@ -37,7 +37,7 @@ static int reg_read(struct dsa_switch *ds, int addr, int reg)
 
 static int reg_write(struct dsa_switch *ds, int addr, int reg, u16 val)
 {
-	struct mv88e6060_priv *priv = ds_to_priv(ds);
+	struct mv88e6060_priv *priv = ds->priv;
 
 	return mdiobus_write_nested(priv->bus, priv->sw_addr + addr, reg, val);
 }
@@ -67,6 +67,11 @@ static const char *mv88e6060_get_name(struct mii_bus *bus, int sw_addr)
 	}
 
 	return NULL;
+}
+
+static enum dsa_tag_protocol mv88e6060_get_tag_protocol(struct dsa_switch *ds)
+{
+	return DSA_TAG_PROTO_TRAILER;
 }
 
 static const char *mv88e6060_drv_probe(struct device *dsa_dev,
@@ -171,7 +176,7 @@ static int mv88e6060_setup_port(struct dsa_switch *ds, int p)
 		  ((p & 0xf) << PORT_VLAN_MAP_DBNUM_SHIFT) |
 		   (dsa_is_cpu_port(ds, p) ?
 			ds->enabled_port_mask :
-			BIT(ds->dst->cpu_port)));
+			BIT(ds->dst->cpu_dp->index)));
 
 	/* Port Association Vector: when learning source addresses
 	 * of packets, add the address to the address database using
@@ -247,8 +252,8 @@ mv88e6060_phy_write(struct dsa_switch *ds, int port, int regnum, u16 val)
 	return reg_write(ds, addr, regnum, val);
 }
 
-static struct dsa_switch_driver mv88e6060_switch_driver = {
-	.tag_protocol	= DSA_TAG_PROTO_TRAILER,
+static const struct dsa_switch_ops mv88e6060_switch_ops = {
+	.get_tag_protocol = mv88e6060_get_tag_protocol,
 	.probe		= mv88e6060_drv_probe,
 	.setup		= mv88e6060_setup,
 	.set_addr	= mv88e6060_set_addr,
@@ -256,16 +261,20 @@ static struct dsa_switch_driver mv88e6060_switch_driver = {
 	.phy_write	= mv88e6060_phy_write,
 };
 
+static struct dsa_switch_driver mv88e6060_switch_drv = {
+	.ops		= &mv88e6060_switch_ops,
+};
+
 static int __init mv88e6060_init(void)
 {
-	register_switch_driver(&mv88e6060_switch_driver);
+	register_switch_driver(&mv88e6060_switch_drv);
 	return 0;
 }
 module_init(mv88e6060_init);
 
 static void __exit mv88e6060_cleanup(void)
 {
-	unregister_switch_driver(&mv88e6060_switch_driver);
+	unregister_switch_driver(&mv88e6060_switch_drv);
 }
 module_exit(mv88e6060_cleanup);
 

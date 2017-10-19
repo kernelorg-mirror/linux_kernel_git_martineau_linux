@@ -775,6 +775,8 @@ static int fsl_elbc_chip_init(struct fsl_elbc_mtd *priv)
 	chip->select_chip = fsl_elbc_select_chip;
 	chip->cmdfunc = fsl_elbc_cmdfunc;
 	chip->waitfunc = fsl_elbc_wait;
+	chip->onfi_set_features = nand_onfi_get_set_features_notsupp;
+	chip->onfi_get_features = nand_onfi_get_set_features_notsupp;
 
 	chip->bbt_td = &bbt_main_descr;
 	chip->bbt_md = &bbt_mirror_descr;
@@ -879,8 +881,7 @@ static int fsl_elbc_nand_probe(struct platform_device *pdev)
 		}
 		elbc_fcm_ctrl->counter++;
 
-		spin_lock_init(&elbc_fcm_ctrl->controller.lock);
-		init_waitqueue_head(&elbc_fcm_ctrl->controller.wq);
+		nand_hw_control_init(&elbc_fcm_ctrl->controller);
 		fsl_lbc_ctrl_dev->nand = elbc_fcm_ctrl;
 	} else {
 		elbc_fcm_ctrl = fsl_lbc_ctrl_dev->nand;

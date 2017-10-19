@@ -50,7 +50,7 @@ DEFINE_PER_CPU(struct vcpu_info *, xen_vcpu);
 static struct vcpu_info __percpu *xen_vcpu_info;
 
 /* Linux <-> Xen vCPU id mapping */
-DEFINE_PER_CPU(int, xen_vcpu_id) = -1;
+DEFINE_PER_CPU(uint32_t, xen_vcpu_id);
 EXPORT_PER_CPU_SYMBOL(xen_vcpu_id);
 
 /* These are unused until we support booting "pre-ballooned" */
@@ -170,9 +170,6 @@ static int xen_starting_cpu(unsigned int cpu)
 	pr_info("Xen: initializing cpu%d\n", cpu);
 	vcpup = per_cpu_ptr(xen_vcpu_info, cpu);
 
-	/* Direct vCPU id mapping for ARM guests. */
-	per_cpu(xen_vcpu_id, cpu) = cpu;
-
 	info.mfn = virt_to_gfn(vcpup);
 	info.offset = xen_offset_in_page(vcpup);
 
@@ -194,20 +191,24 @@ static int xen_dying_cpu(unsigned int cpu)
 	return 0;
 }
 
-static void xen_restart(enum reboot_mode reboot_mode, const char *cmd)
+void xen_reboot(int reason)
 {
-	struct sched_shutdown r = { .reason = SHUTDOWN_reboot };
+	struct sched_shutdown r = { .reason = reason };
 	int rc;
+
 	rc = HYPERVISOR_sched_op(SCHEDOP_shutdown, &r);
 	BUG_ON(rc);
 }
 
+static void xen_restart(enum reboot_mode reboot_mode, const char *cmd)
+{
+	xen_reboot(SHUTDOWN_reboot);
+}
+
+
 static void xen_power_off(void)
 {
-	struct sched_shutdown r = { .reason = SHUTDOWN_poweroff };
-	int rc;
-	rc = HYPERVISOR_sched_op(SCHEDOP_shutdown, &r);
-	BUG_ON(rc);
+	xen_reboot(SHUTDOWN_poweroff);
 }
 
 static irqreturn_t xen_arm_callback(int irq, void *arg)
@@ -330,6 +331,7 @@ static int __init xen_guest_init(void)
 {
 	struct xen_add_to_physmap xatp;
 	struct shared_info *shared_info_page = NULL;
+	int cpu;
 
 	if (!xen_domain())
 		return 0;
@@ -374,13 +376,13 @@ static int __init xen_guest_init(void)
 	 * for secondary CPUs as they are brought up.
 	 * For uniformity we use VCPUOP_register_vcpu_info even on cpu0.
 	 */
-	xen_vcpu_info = __alloc_percpu(sizeof(struct vcpu_info),
-			                       sizeof(struct vcpu_info));
+	xen_vcpu_info = alloc_percpu(struct vcpu_info);
 	if (xen_vcpu_info == NULL)
 		return -ENOMEM;
 
 	/* Direct vCPU id mapping for ARM guests. */
-	per_cpu(xen_vcpu_id, 0) = 0;
+	for_each_possible_cpu(cpu)
+		per_cpu(xen_vcpu_id, cpu) = cpu;
 
 	xen_auto_xlat_grant_frames.count = gnttab_max_grant_frames();
 	if (xen_xlate_map_ballooned_pages(&xen_auto_xlat_grant_frames.pfn,
@@ -414,7 +416,7 @@ static int __init xen_guest_init(void)
 		pvclock_gtod_register_notifier(&xen_pvclock_gtod_notifier);
 
 	return cpuhp_setup_state(CPUHP_AP_ARM_XEN_STARTING,
-				 "AP_ARM_XEN_STARTING", xen_starting_cpu,
+				 "arm/xen:starting", xen_starting_cpu,
 				 xen_dying_cpu);
 }
 early_initcall(xen_guest_init);
@@ -459,4 +461,5 @@ EXPORT_SYMBOL_GPL(HYPERVISOR_tmem_op);
 EXPORT_SYMBOL_GPL(HYPERVISOR_platform_op);
 EXPORT_SYMBOL_GPL(HYPERVISOR_multicall);
 EXPORT_SYMBOL_GPL(HYPERVISOR_vm_assist);
+EXPORT_SYMBOL_GPL(HYPERVISOR_dm_op);
 EXPORT_SYMBOL_GPL(privcmd_call);

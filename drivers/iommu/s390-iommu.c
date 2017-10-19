@@ -8,7 +8,6 @@
 #include <linux/pci.h>
 #include <linux/iommu.h>
 #include <linux/iommu-helper.h>
-#include <linux/pci.h>
 #include <linux/sizes.h>
 #include <asm/pci_dma.h>
 
@@ -101,8 +100,7 @@ static int s390_iommu_attach_device(struct iommu_domain *domain,
 		zpci_dma_exit_device(zdev);
 
 	zdev->dma_table = s390_domain->dma_table;
-	rc = zpci_register_ioat(zdev, 0, zdev->start_dma + PAGE_OFFSET,
-				zdev->start_dma + zdev->iommu_size - 1,
+	rc = zpci_register_ioat(zdev, 0, zdev->start_dma, zdev->end_dma,
 				(u64) zdev->dma_table);
 	if (rc)
 		goto out_restore;
@@ -167,20 +165,14 @@ static void s390_iommu_detach_device(struct iommu_domain *domain,
 
 static int s390_iommu_add_device(struct device *dev)
 {
-	struct iommu_group *group;
-	int rc;
+	struct iommu_group *group = iommu_group_get_for_dev(dev);
 
-	group = iommu_group_get(dev);
-	if (!group) {
-		group = iommu_group_alloc();
-		if (IS_ERR(group))
-			return PTR_ERR(group);
-	}
+	if (IS_ERR(group))
+		return PTR_ERR(group);
 
-	rc = iommu_group_add_device(group, dev);
 	iommu_group_put(group);
 
-	return rc;
+	return 0;
 }
 
 static void s390_iommu_remove_device(struct device *dev)
@@ -346,6 +338,7 @@ static struct iommu_ops s390_iommu_ops = {
 	.iova_to_phys = s390_iommu_iova_to_phys,
 	.add_device = s390_iommu_add_device,
 	.remove_device = s390_iommu_remove_device,
+	.device_group = generic_device_group,
 	.pgsize_bitmap = S390_IOMMU_PGSIZES,
 };
 

@@ -1,10 +1,12 @@
 #ifndef _FS_CEPH_OSD_CLIENT_H
 #define _FS_CEPH_OSD_CLIENT_H
 
+#include <linux/bitrev.h>
 #include <linux/completion.h>
 #include <linux/kref.h>
 #include <linux/mempool.h>
 #include <linux/rbtree.h>
+#include <linux/refcount.h>
 
 #include <linux/ceph/types.h>
 #include <linux/ceph/osdmap.h>
@@ -22,13 +24,12 @@ struct ceph_osd_client;
  * completion callback for async writepages
  */
 typedef void (*ceph_osdc_callback_t)(struct ceph_osd_request *);
-typedef void (*ceph_osdc_unsafe_callback_t)(struct ceph_osd_request *, bool);
 
 #define CEPH_HOMELESS_OSD	-1
 
 /* a given osd we're communicating with */
 struct ceph_osd {
-	atomic_t o_ref;
+	refcount_t o_ref;
 	struct ceph_osd_client *o_osdc;
 	int o_osd;
 	int o_incarnation;
@@ -36,6 +37,8 @@ struct ceph_osd {
 	struct ceph_connection o_con;
 	struct rb_root o_requests;
 	struct rb_root o_linger_requests;
+	struct rb_root o_backoff_mappings;
+	struct rb_root o_backoffs_by_id;
 	struct list_head o_osd_lru;
 	struct ceph_auth_handshake o_auth;
 	unsigned long lru_ttl;
@@ -121,6 +124,9 @@ struct ceph_osd_req_op {
 			struct ceph_osd_data response_data;
 		} notify;
 		struct {
+			struct ceph_osd_data response_data;
+		} list_watchers;
+		struct {
 			u64 expected_object_size;
 			u64 expected_write_size;
 		} alloc_hint;
@@ -133,7 +139,8 @@ struct ceph_osd_request_target {
 	struct ceph_object_id target_oid;
 	struct ceph_object_locator target_oloc;
 
-	struct ceph_pg pgid;
+	struct ceph_pg pgid;               /* last raw pg we mapped to */
+	struct ceph_spg spgid;             /* last actual spg we mapped to */
 	u32 pg_num;
 	u32 pg_num_mask;
 	struct ceph_osds acting;
@@ -141,9 +148,13 @@ struct ceph_osd_request_target {
 	int size;
 	int min_size;
 	bool sort_bitwise;
+	bool recovery_deletes;
 
 	unsigned int flags;                /* CEPH_OSD_FLAG_* */
 	bool paused;
+
+	u32 epoch;
+	u32 last_force_resend;
 
 	int osd;
 };
@@ -167,15 +178,12 @@ struct ceph_osd_request {
 	unsigned int		r_num_ops;
 
 	int               r_result;
-	bool              r_got_reply;
 
 	struct ceph_osd_client *r_osdc;
 	struct kref       r_kref;
 	bool              r_mempool;
-	struct completion r_completion;
-	struct completion r_safe_completion;  /* fsync waiter */
+	struct completion r_completion;       /* private to osd_client.c */
 	ceph_osdc_callback_t r_callback;
-	ceph_osdc_unsafe_callback_t r_unsafe_callback;
 	struct list_head  r_unsafe_item;
 
 	struct inode *r_inode;         	      /* for use by callbacks */
@@ -187,12 +195,12 @@ struct ceph_osd_request {
 	struct timespec r_mtime;              /* ditto */
 	u64 r_data_offset;                    /* ditto */
 	bool r_linger;                        /* don't resend on failure */
+	bool r_abort_on_full;		      /* return ENOSPC when full */
 
 	/* internal */
 	unsigned long r_stamp;                /* jiffies, send or check time */
+	unsigned long r_start_stamp;          /* jiffies */
 	int r_attempts;
-	struct ceph_eversion r_replay_version; /* aka reassert_version */
-	u32 r_last_force_resend;
 	u32 r_map_dne_bound;
 
 	struct ceph_osd_req_op r_ops[];
@@ -201,6 +209,23 @@ struct ceph_osd_request {
 struct ceph_request_redirect {
 	struct ceph_object_locator oloc;
 };
+
+/*
+ * osd request identifier
+ *
+ * caller name + incarnation# + tid to unique identify this request
+ */
+struct ceph_osd_reqid {
+	struct ceph_entity_name name;
+	__le64 tid;
+	__le32 inc;
+} __packed;
+
+struct ceph_blkin_trace_info {
+	__le64 trace_id;
+	__le64 span_id;
+	__le64 parent_span_id;
+} __packed;
 
 typedef void (*rados_watchcb2_t)(void *arg, u64 notify_id, u64 cookie,
 				 u64 notifier_id, void *data, size_t data_len);
@@ -220,7 +245,6 @@ struct ceph_osd_linger_request {
 	struct list_head pending_lworks;
 
 	struct ceph_osd_request_target t;
-	u32 last_force_resend;
 	u32 map_dne_bound;
 
 	struct timespec mtime;
@@ -249,6 +273,56 @@ struct ceph_osd_linger_request {
 	size_t *preply_len;
 };
 
+struct ceph_watch_item {
+	struct ceph_entity_name name;
+	u64 cookie;
+	struct ceph_entity_addr addr;
+};
+
+struct ceph_spg_mapping {
+	struct rb_node node;
+	struct ceph_spg spgid;
+
+	struct rb_root backoffs;
+};
+
+struct ceph_hobject_id {
+	void *key;
+	size_t key_len;
+	void *oid;
+	size_t oid_len;
+	u64 snapid;
+	u32 hash;
+	u8 is_max;
+	void *nspace;
+	size_t nspace_len;
+	s64 pool;
+
+	/* cache */
+	u32 hash_reverse_bits;
+};
+
+static inline void ceph_hoid_build_hash_cache(struct ceph_hobject_id *hoid)
+{
+	hoid->hash_reverse_bits = bitrev32(hoid->hash);
+}
+
+/*
+ * PG-wide backoff: [begin, end)
+ * per-object backoff: begin == end
+ */
+struct ceph_osd_backoff {
+	struct rb_node spg_node;
+	struct rb_node id_node;
+
+	struct ceph_spg spgid;
+	u64 id;
+	struct ceph_hobject_id *begin;
+	struct ceph_hobject_id *end;
+};
+
+#define CEPH_LINGER_ID_START	0xffff000000000000ULL
+
 struct ceph_osd_client {
 	struct ceph_client     *client;
 
@@ -258,6 +332,7 @@ struct ceph_osd_client {
 	struct rb_root         osds;          /* osds */
 	struct list_head       osd_lru;       /* idle osds */
 	spinlock_t             osd_lru_lock;
+	u32		       epoch_barrier;
 	struct ceph_osd        homeless_osd;
 	atomic64_t             last_tid;      /* tid of last request */
 	u64                    last_linger_id;
@@ -296,6 +371,7 @@ extern void ceph_osdc_handle_reply(struct ceph_osd_client *osdc,
 				   struct ceph_msg *msg);
 extern void ceph_osdc_handle_map(struct ceph_osd_client *osdc,
 				 struct ceph_msg *msg);
+void ceph_osdc_update_epoch_barrier(struct ceph_osd_client *osdc, u32 eb);
 
 extern void osd_req_op_init(struct ceph_osd_request *osd_req,
 			    unsigned int which, u16 opcode, u32 flags);
@@ -346,7 +422,6 @@ extern void osd_req_op_cls_response_data_pages(struct ceph_osd_request *,
 					struct page **pages, u64 length,
 					u32 alignment, bool pages_from_pool,
 					bool own_pages);
-
 extern void osd_req_op_cls_init(struct ceph_osd_request *osd_req,
 					unsigned int which, u16 opcode,
 					const char *class, const char *method);
@@ -388,6 +463,14 @@ extern void ceph_osdc_sync(struct ceph_osd_client *osdc);
 
 extern void ceph_osdc_flush_notifies(struct ceph_osd_client *osdc);
 void ceph_osdc_maybe_request_map(struct ceph_osd_client *osdc);
+
+int ceph_osdc_call(struct ceph_osd_client *osdc,
+		   struct ceph_object_id *oid,
+		   struct ceph_object_locator *oloc,
+		   const char *class, const char *method,
+		   unsigned int flags,
+		   struct page *req_page, size_t req_len,
+		   struct page *resp_page, size_t *resp_len);
 
 extern int ceph_osdc_readpages(struct ceph_osd_client *osdc,
 			       struct ceph_vino vino,
@@ -434,5 +517,10 @@ int ceph_osdc_notify(struct ceph_osd_client *osdc,
 		     size_t *preply_len);
 int ceph_osdc_watch_check(struct ceph_osd_client *osdc,
 			  struct ceph_osd_linger_request *lreq);
+int ceph_osdc_list_watchers(struct ceph_osd_client *osdc,
+			    struct ceph_object_id *oid,
+			    struct ceph_object_locator *oloc,
+			    struct ceph_watch_item **watchers,
+			    u32 *num_watchers);
 #endif
 

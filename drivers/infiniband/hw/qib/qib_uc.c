@@ -48,7 +48,7 @@
 int qib_make_uc_req(struct rvt_qp *qp, unsigned long *flags)
 {
 	struct qib_qp_priv *priv = qp->priv;
-	struct qib_other_headers *ohdr;
+	struct ib_other_headers *ohdr;
 	struct rvt_swqe *wqe;
 	u32 hwords;
 	u32 bth0;
@@ -74,7 +74,7 @@ int qib_make_uc_req(struct rvt_qp *qp, unsigned long *flags)
 	}
 
 	ohdr = &priv->s_hdr->u.oth;
-	if (qp->remote_ah_attr.ah_flags & IB_AH_GRH)
+	if (rdma_ah_get_ah_flags(&qp->remote_ah_attr) & IB_AH_GRH)
 		ohdr = &priv->s_hdr->u.l.oth;
 
 	/* header size in 32-bit words LRH+BTH = (8+12)/4. */
@@ -236,10 +236,10 @@ bail:
  * for the given QP.
  * Called at interrupt level.
  */
-void qib_uc_rcv(struct qib_ibport *ibp, struct qib_ib_header *hdr,
+void qib_uc_rcv(struct qib_ibport *ibp, struct ib_header *hdr,
 		int has_grh, void *data, u32 tlen, struct rvt_qp *qp)
 {
-	struct qib_other_headers *ohdr;
+	struct ib_other_headers *ohdr;
 	u32 opcode;
 	u32 hdrsize;
 	u32 psn;
@@ -325,17 +325,8 @@ inv:
 		goto inv;
 	}
 
-	if (qp->state == IB_QPS_RTR && !(qp->r_flags & RVT_R_COMM_EST)) {
-		qp->r_flags |= RVT_R_COMM_EST;
-		if (qp->ibqp.event_handler) {
-			struct ib_event ev;
-
-			ev.device = qp->ibqp.device;
-			ev.element.qp = &qp->ibqp;
-			ev.event = IB_EVENT_COMM_EST;
-			qp->ibqp.event_handler(&ev, qp->ibqp.qp_context);
-		}
-	}
+	if (qp->state == IB_QPS_RTR && !(qp->r_flags & RVT_R_COMM_EST))
+		rvt_comm_est(qp);
 
 	/* OK, process the packet. */
 	switch (opcode) {
@@ -403,8 +394,8 @@ last_imm:
 		wc.status = IB_WC_SUCCESS;
 		wc.qp = &qp->ibqp;
 		wc.src_qp = qp->remote_qpn;
-		wc.slid = qp->remote_ah_attr.dlid;
-		wc.sl = qp->remote_ah_attr.sl;
+		wc.slid = rdma_ah_get_dlid(&qp->remote_ah_attr);
+		wc.sl = rdma_ah_get_sl(&qp->remote_ah_attr);
 		/* zero fields that are N/A */
 		wc.vendor_err = 0;
 		wc.pkey_index = 0;
@@ -527,7 +518,7 @@ drop:
 	return;
 
 op_err:
-	qib_rc_error(qp, IB_WC_LOC_QP_OP_ERR);
+	rvt_rc_error(qp, IB_WC_LOC_QP_OP_ERR);
 	return;
 
 }

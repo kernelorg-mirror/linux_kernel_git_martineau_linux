@@ -15,7 +15,6 @@ config ARCH_BCM_IPROC
 	select HAVE_ARM_SCU if SMP
 	select HAVE_ARM_TWD if SMP
 	select ARM_GLOBAL_TIMER
-	select COMMON_CLK_IPROC
 	select CLKSRC_MMIO
 	select GPIOLIB
 	select ARM_AMBA
@@ -45,6 +44,8 @@ config ARCH_BCM_NSP
 	select ARM_ERRATA_775420
 	select ARM_ERRATA_764369 if SMP
 	select HAVE_SMP
+	select THERMAL
+	select THERMAL_OF
 	help
 	  Support for Broadcom Northstar Plus SoC.
 	  Broadcom Northstar Plus family of SoCs are used for switching control
@@ -151,13 +152,27 @@ config ARCH_BCM2835
 	select ARM_ERRATA_411920 if ARCH_MULTI_V6
 	select ARM_TIMER_SP804
 	select HAVE_ARM_ARCH_TIMER if ARCH_MULTI_V7
-	select CLKSRC_OF
+	select TIMER_OF
 	select BCM2835_TIMER
 	select PINCTRL
 	select PINCTRL_BCM2835
 	help
 	  This enables support for the Broadcom BCM2835 and BCM2836 SoCs.
 	  This SoC is used in the Raspberry Pi and Roku 2 devices.
+
+config ARCH_BCM_53573
+	bool "Broadcom BCM53573 SoC series support"
+	depends on ARCH_MULTI_V7
+	select ARCH_BCM_IPROC
+	select HAVE_ARM_ARCH_TIMER
+	help
+	  BCM53573 series is set of SoCs using ARM Cortex-A7 CPUs with wireless
+	  embedded in the chipset.
+	  This SoC line is mostly used in home routers and is some cheaper
+	  alternative for Northstar family.
+
+	  The base chip is BCM53573 and there are some packaging modifications
+	  like BCM47189 and BCM47452.
 
 config ARCH_BCM_63XX
 	bool "Broadcom BCM63xx DSL SoC"
@@ -185,7 +200,9 @@ config ARCH_BRCMSTB
 	select HAVE_ARM_ARCH_TIMER
 	select BRCMSTB_L2_IRQ
 	select BCM7120_L2_IRQ
+	select ARCH_HAS_HOLES_MEMORYMODEL
 	select ARCH_DMA_ADDR_T_64BIT if ARM_LPAE
+	select ZONE_DMA if ARM_LPAE
 	select SOC_BRCMSTB
 	select SOC_BUS
 	help

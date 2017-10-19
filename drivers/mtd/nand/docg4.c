@@ -1249,8 +1249,7 @@ static void __init init_mtd_structs(struct mtd_info *mtd)
 	nand->options = NAND_BUSWIDTH_16 | NAND_NO_SUBPAGE_WRITE;
 	nand->IO_ADDR_R = nand->IO_ADDR_W = doc->virtadr + DOC_IOSPACE_DATA;
 	nand->controller = &nand->hwcontrol;
-	spin_lock_init(&nand->controller->lock);
-	init_waitqueue_head(&nand->controller->wq);
+	nand_hw_control_init(nand->controller);
 
 	/* methods */
 	nand->cmdfunc = docg4_command;
@@ -1261,6 +1260,8 @@ static void __init init_mtd_structs(struct mtd_info *mtd)
 	nand->read_buf = docg4_read_buf;
 	nand->write_buf = docg4_write_buf16;
 	nand->erase = docg4_erase_block;
+	nand->onfi_set_features = nand_onfi_get_set_features_notsupp;
+	nand->onfi_get_features = nand_onfi_get_set_features_notsupp;
 	nand->ecc.read_page = docg4_read_page;
 	nand->ecc.write_page = docg4_write_page;
 	nand->ecc.read_page_raw = docg4_read_page_raw;

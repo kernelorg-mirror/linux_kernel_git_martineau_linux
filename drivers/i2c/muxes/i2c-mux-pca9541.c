@@ -85,6 +85,14 @@ static const struct i2c_device_id pca9541_id[] = {
 
 MODULE_DEVICE_TABLE(i2c, pca9541_id);
 
+#ifdef CONFIG_OF
+static const struct of_device_id pca9541_of_match[] = {
+	{ .compatible = "nxp,pca9541" },
+	{}
+};
+MODULE_DEVICE_TABLE(of, pca9541_of_match);
+#endif
+
 /*
  * Write to chip register. Don't use i2c_transfer()/i2c_smbus_xfer()
  * as they will try to lock the adapter a second time.
@@ -349,7 +357,8 @@ static int pca9541_probe(struct i2c_client *client,
 	force = 0;
 	if (pdata)
 		force = pdata->modes[0].adap_id;
-	muxc = i2c_mux_alloc(adap, &client->dev, 1, sizeof(*data), 0,
+	muxc = i2c_mux_alloc(adap, &client->dev, 1, sizeof(*data),
+			     I2C_MUX_ARBITRATOR,
 			     pca9541_select_chan, pca9541_release_chan);
 	if (!muxc)
 		return -ENOMEM;
@@ -360,10 +369,8 @@ static int pca9541_probe(struct i2c_client *client,
 	i2c_set_clientdata(client, muxc);
 
 	ret = i2c_mux_add_adapter(muxc, force, 0, 0);
-	if (ret) {
-		dev_err(&client->dev, "failed to register master selector\n");
+	if (ret)
 		return ret;
-	}
 
 	dev_info(&client->dev, "registered master selector for I2C %s\n",
 		 client->name);
@@ -382,6 +389,7 @@ static int pca9541_remove(struct i2c_client *client)
 static struct i2c_driver pca9541_driver = {
 	.driver = {
 		   .name = "pca9541",
+		   .of_match_table = of_match_ptr(pca9541_of_match),
 		   },
 	.probe = pca9541_probe,
 	.remove = pca9541_remove,

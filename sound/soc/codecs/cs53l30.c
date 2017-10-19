@@ -466,7 +466,7 @@ struct cs53l30_mclk_div {
 	u8 mclk_int_scale;
 };
 
-static struct cs53l30_mclk_div cs53l30_mclk_coeffs[] = {
+static const struct cs53l30_mclk_div cs53l30_mclk_coeffs[] = {
 	/* NOTE: Enable MCLK_INT_SCALE to save power. */
 
 	/* MCLK, Sample Rate, asp_rate, internal_fs_ratio, mclk_int_scale */
@@ -511,7 +511,7 @@ struct cs53l30_mclkx_div {
 	u8 mclkdiv;
 };
 
-static struct cs53l30_mclkx_div cs53l30_mclkx_coeffs[] = {
+static const struct cs53l30_mclkx_div cs53l30_mclkx_coeffs[] = {
 	{5644800,  1, CS53L30_MCLK_DIV_BY_1},
 	{6000000,  1, CS53L30_MCLK_DIV_BY_1},
 	{6144000,  1, CS53L30_MCLK_DIV_BY_1},
@@ -747,7 +747,7 @@ static unsigned int const cs53l30_src_rates[] = {
 	8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000
 };
 
-static struct snd_pcm_hw_constraint_list src_constraints = {
+static const struct snd_pcm_hw_constraint_list src_constraints = {
 	.count = ARRAY_SIZE(cs53l30_src_rates),
 	.list = cs53l30_src_rates,
 };
@@ -897,13 +897,14 @@ static struct snd_soc_codec_driver cs53l30_driver = {
 	.set_bias_level = cs53l30_set_bias_level,
 	.idle_bias_off = true,
 
-	.dapm_widgets = cs53l30_dapm_widgets,
-	.num_dapm_widgets = ARRAY_SIZE(cs53l30_dapm_widgets),
-	.dapm_routes = cs53l30_dapm_routes,
-	.num_dapm_routes = ARRAY_SIZE(cs53l30_dapm_routes),
-
-	.controls = cs53l30_snd_controls,
-	.num_controls = ARRAY_SIZE(cs53l30_snd_controls),
+	.component_driver = {
+		.controls		= cs53l30_snd_controls,
+		.num_controls		= ARRAY_SIZE(cs53l30_snd_controls),
+		.dapm_widgets		= cs53l30_dapm_widgets,
+		.num_dapm_widgets	= ARRAY_SIZE(cs53l30_dapm_widgets),
+		.dapm_routes		= cs53l30_dapm_routes,
+		.num_dapm_routes	= ARRAY_SIZE(cs53l30_dapm_routes),
+	},
 };
 
 static struct regmap_config cs53l30_regmap = {
@@ -999,8 +1000,8 @@ static int cs53l30_i2c_probe(struct i2c_client *client,
 	/* Check if MCLK provided */
 	cs53l30->mclk = devm_clk_get(dev, "mclk");
 	if (IS_ERR(cs53l30->mclk)) {
-		if (PTR_ERR(cs53l30->mclk) == -EPROBE_DEFER) {
-			ret = -EPROBE_DEFER;
+		if (PTR_ERR(cs53l30->mclk) != -ENOENT) {
+			ret = PTR_ERR(cs53l30->mclk);
 			goto error;
 		}
 		/* Otherwise mark the mclk pointer to NULL */
@@ -1129,6 +1130,7 @@ MODULE_DEVICE_TABLE(i2c, cs53l30_id);
 static struct i2c_driver cs53l30_i2c_driver = {
 	.driver = {
 		.name = "cs53l30",
+		.of_match_table = cs53l30_of_match,
 		.pm = &cs53l30_runtime_pm,
 	},
 	.id_table = cs53l30_id,

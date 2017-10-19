@@ -98,7 +98,7 @@ static int x2apic_phys_probe(void)
 	return apic == &apic_x2apic_phys;
 }
 
-static struct apic apic_x2apic_phys = {
+static struct apic apic_x2apic_phys __ro_after_init = {
 
 	.name				= "physical x2apic",
 	.probe				= x2apic_phys_probe,
@@ -127,7 +127,7 @@ static struct apic apic_x2apic_phys = {
 	.get_apic_id			= x2apic_get_apic_id,
 	.set_apic_id			= x2apic_set_apic_id,
 
-	.cpu_mask_to_apicid_and		= default_cpu_mask_to_apicid_and,
+	.cpu_mask_to_apicid		= default_cpu_mask_to_apicid,
 
 	.send_IPI			= x2apic_send_IPI,
 	.send_IPI_mask			= x2apic_send_IPI_mask,

@@ -61,7 +61,7 @@
 static void vid_dbg_ctl(struct seq_file *s, int val)
 {
 	val = val >> 30;
-	seq_puts(s, "\t");
+	seq_putc(s, '\t');
 
 	if (!(val & 1))
 		seq_puts(s, "NOT ");
@@ -114,8 +114,7 @@ static int vid_dbg_show(struct seq_file *s, void *arg)
 	DBGFS_DUMP(VID_BC);
 	DBGFS_DUMP(VID_TINT);
 	DBGFS_DUMP(VID_CSAT);
-	seq_puts(s, "\n");
-
+	seq_putc(s, '\n');
 	return 0;
 }
 
@@ -142,8 +141,8 @@ void sti_vid_commit(struct sti_vid *vid,
 	struct drm_display_mode *mode = &crtc->mode;
 	int dst_x = state->crtc_x;
 	int dst_y = state->crtc_y;
-	int dst_w = clamp_val(state->crtc_w, 0, mode->crtc_hdisplay - dst_x);
-	int dst_h = clamp_val(state->crtc_h, 0, mode->crtc_vdisplay - dst_y);
+	int dst_w = clamp_val(state->crtc_w, 0, mode->hdisplay - dst_x);
+	int dst_h = clamp_val(state->crtc_h, 0, mode->vdisplay - dst_y);
 	int src_h = state->src_h >> 16;
 	u32 val, ydo, xdo, yds, xds;
 

@@ -257,7 +257,7 @@ static int ad7793_setup(struct iio_dev *indio_dev,
 	unsigned int vref_mv)
 {
 	struct ad7793_state *st = iio_priv(indio_dev);
-	int i, ret = -1;
+	int i, ret;
 	unsigned long long scale_uv;
 	u32 id;
 
@@ -266,7 +266,7 @@ static int ad7793_setup(struct iio_dev *indio_dev,
 		return ret;
 
 	/* reset the serial interface */
-	ret = spi_write(st->sd.spi, (u8 *)&ret, sizeof(ret));
+	ret = ad_sd_reset(&st->sd, 32);
 	if (ret < 0)
 		goto out;
 	usleep_range(500, 2000); /* Wait for at least 500us */
@@ -519,11 +519,9 @@ static int ad7793_write_raw(struct iio_dev *indio_dev,
 	int ret, i;
 	unsigned int tmp;
 
-	mutex_lock(&indio_dev->mlock);
-	if (iio_buffer_enabled(indio_dev)) {
-		mutex_unlock(&indio_dev->mlock);
-		return -EBUSY;
-	}
+	ret = iio_device_claim_direct_mode(indio_dev);
+	if (ret)
+		return ret;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_SCALE:
@@ -548,7 +546,7 @@ static int ad7793_write_raw(struct iio_dev *indio_dev,
 		ret = -EINVAL;
 	}
 
-	mutex_unlock(&indio_dev->mlock);
+	iio_device_release_direct_mode(indio_dev);
 	return ret;
 }
 

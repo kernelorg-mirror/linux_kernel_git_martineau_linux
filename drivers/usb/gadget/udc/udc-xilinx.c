@@ -973,10 +973,8 @@ static struct usb_request *xudc_ep_alloc_request(struct usb_ep *_ep,
 
 	udc = ep->udc;
 	req = kzalloc(sizeof(*req), gfp_flags);
-	if (!req) {
-		dev_err(udc->dev, "%s:not enough memory", __func__);
+	if (!req)
 		return NULL;
-	}
 
 	req->ep = ep;
 	INIT_LIST_HEAD(&req->queue);
@@ -1153,7 +1151,7 @@ static int xudc_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 			break;
 	}
 	if (&req->usb_req != _req) {
-		spin_unlock_irqrestore(&ep->udc->lock, flags);
+		spin_unlock_irqrestore(&udc->lock, flags);
 		return -EINVAL;
 	}
 	xudc_done(ep, req, -ECONNRESET);

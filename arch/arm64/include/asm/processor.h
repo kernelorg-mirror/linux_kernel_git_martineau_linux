@@ -37,7 +37,6 @@
 #include <asm/ptrace.h>
 #include <asm/types.h>
 
-#ifdef __KERNEL__
 #define STACK_TOP_MAX		TASK_SIZE_64
 #ifdef CONFIG_COMPAT
 #define AARCH32_VECTORS_BASE	0xffff0000
@@ -49,9 +48,9 @@
 
 extern phys_addr_t arm64_dma_phys_limit;
 #define ARCH_LOW_ADDRESS_LIMIT	(arm64_dma_phys_limit - 1)
-#endif /* __KERNEL__ */
 
 struct debug_info {
+#ifdef CONFIG_HAVE_HW_BREAKPOINT
 	/* Have we suspended stepping by a debugger? */
 	int			suspended_step;
 	/* Allow breakpoints and watchpoints to be disabled for this thread. */
@@ -60,6 +59,7 @@ struct debug_info {
 	/* Hardware breakpoints pinned to this task. */
 	struct perf_event	*hbp_break[ARM_MAX_BRP];
 	struct perf_event	*hbp_watch[ARM_MAX_WRP];
+#endif
 };
 
 struct cpu_context {
@@ -103,6 +103,9 @@ struct thread_struct {
 #else
 #define task_user_tls(t)	(&(t)->thread.tp_value)
 #endif
+
+/* Sync TPIDR_EL0 back to thread_struct for current */
+void tls_preserve_current_state(void);
 
 #define INIT_THREAD  {	}
 
@@ -151,8 +154,6 @@ static inline void cpu_relax(void)
 	asm volatile("yield" ::: "memory");
 }
 
-#define cpu_relax_lowlatency()                cpu_relax()
-
 /* Thread switching */
 extern struct task_struct *cpu_switch_to(struct task_struct *prev,
 					 struct task_struct *next);
@@ -190,8 +191,7 @@ static inline void spin_lock_prefetch(const void *ptr)
 
 #endif
 
-void cpu_enable_pan(void *__unused);
-void cpu_enable_uao(void *__unused);
-void cpu_enable_cache_maint_trap(void *__unused);
+int cpu_enable_pan(void *__unused);
+int cpu_enable_cache_maint_trap(void *__unused);
 
 #endif /* __ASM_PROCESSOR_H */

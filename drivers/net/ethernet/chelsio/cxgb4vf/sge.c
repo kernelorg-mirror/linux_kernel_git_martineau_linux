@@ -1648,14 +1648,15 @@ int t4vf_ethrx_handler(struct sge_rspq *rspq, const __be64 *rsp,
 
 	if (csum_ok && !pkt->err_vec &&
 	    (be32_to_cpu(pkt->l2info) & (RXF_UDP_F | RXF_TCP_F))) {
-		if (!pkt->ip_frag)
+		if (!pkt->ip_frag) {
 			skb->ip_summed = CHECKSUM_UNNECESSARY;
-		else {
+			rxq->stats.rx_cso++;
+		} else if (pkt->l2info & htonl(RXF_IP_F)) {
 			__sum16 c = (__force __sum16)pkt->csum;
 			skb->csum = csum_unfold(c);
 			skb->ip_summed = CHECKSUM_COMPLETE;
+			rxq->stats.rx_cso++;
 		}
-		rxq->stats.rx_cso++;
 	} else
 		skb_checksum_none_assert(skb);
 
@@ -1888,7 +1889,7 @@ static int napi_rx_handler(struct napi_struct *napi, int budget)
 	u32 val;
 
 	if (likely(work_done < budget)) {
-		napi_complete(napi);
+		napi_complete_done(napi, work_done);
 		intr_params = rspq->next_intr_params;
 		rspq->next_intr_params = rspq->intr_params;
 	} else
@@ -2204,6 +2205,7 @@ int t4vf_sge_alloc_rxq(struct adapter *adapter, struct sge_rspq *rspq,
 	struct port_info *pi = netdev_priv(dev);
 	struct fw_iq_cmd cmd, rpl;
 	int ret, iqandst, flsz = 0;
+	int relaxed = !(adapter->flags & ROOT_NO_RELAXED_ORDERING);
 
 	/*
 	 * If we're using MSI interrupts and we're not initializing the
@@ -2299,6 +2301,8 @@ int t4vf_sge_alloc_rxq(struct adapter *adapter, struct sge_rspq *rspq,
 			cpu_to_be32(
 				FW_IQ_CMD_FL0HOSTFCMODE_V(SGE_HOSTFCMODE_NONE) |
 				FW_IQ_CMD_FL0PACKEN_F |
+				FW_IQ_CMD_FL0FETCHRO_V(relaxed) |
+				FW_IQ_CMD_FL0DATARO_V(relaxed) |
 				FW_IQ_CMD_FL0PADEN_F);
 
 		/* In T6, for egress queue type FL there is internal overhead

@@ -122,6 +122,7 @@ SECTIONS
 			ENTRY_TEXT
 			TEXT_TEXT
 			SCHED_TEXT
+			CPUIDLE_TEXT
 			LOCK_TEXT
 			KPROBES_TEXT
 			HYPERVISOR_TEXT
@@ -142,11 +143,26 @@ SECTIONS
 
 	. = ALIGN(SEGMENT_ALIGN);
 	__init_begin = .;
+	__inittext_begin = .;
 
 	INIT_TEXT_SECTION(8)
 	.exit.text : {
 		ARM_EXIT_KEEP(EXIT_TEXT)
 	}
+
+	. = ALIGN(4);
+	.altinstructions : {
+		__alt_instructions = .;
+		*(.altinstructions)
+		__alt_instructions_end = .;
+	}
+	.altinstr_replacement : {
+		*(.altinstr_replacement)
+	}
+
+	. = ALIGN(PAGE_SIZE);
+	__inittext_end = .;
+	__initdata_begin = .;
 
 	.init.data : {
 		INIT_DATA
@@ -163,15 +179,6 @@ SECTIONS
 
 	PERCPU_SECTION(L1_CACHE_BYTES)
 
-	. = ALIGN(4);
-	.altinstructions : {
-		__alt_instructions = .;
-		*(.altinstructions)
-		__alt_instructions_end = .;
-	}
-	.altinstr_replacement : {
-		*(.altinstr_replacement)
-	}
 	.rela : ALIGN(8) {
 		*(.rela .rela*)
 	}
@@ -180,12 +187,33 @@ SECTIONS
 	__rela_size	= SIZEOF(.rela);
 
 	. = ALIGN(SEGMENT_ALIGN);
+	__initdata_end = .;
 	__init_end = .;
 
 	_data = .;
 	_sdata = .;
 	RW_DATA_SECTION(L1_CACHE_BYTES, PAGE_SIZE, THREAD_SIZE)
+
+	/*
+	 * Data written with the MMU off but read with the MMU on requires
+	 * cache lines to be invalidated, discarding up to a Cache Writeback
+	 * Granule (CWG) of data from the cache. Keep the section that
+	 * requires this type of maintenance to be in its own Cache Writeback
+	 * Granule (CWG) area so the cache maintenance operations don't
+	 * interfere with adjacent data.
+	 */
+	.mmuoff.data.write : ALIGN(SZ_2K) {
+		__mmuoff_data_start = .;
+		*(.mmuoff.data.write)
+	}
+	. = ALIGN(SZ_2K);
+	.mmuoff.data.read : {
+		*(.mmuoff.data.read)
+		__mmuoff_data_end = .;
+	}
+
 	PECOFF_EDATA_PADDING
+	__pecoff_data_rawsize = ABSOLUTE(. - __initdata_begin);
 	_edata = .;
 
 	BSS_SECTION(0, 0, 0)
@@ -196,6 +224,12 @@ SECTIONS
 	swapper_pg_dir = .;
 	. += SWAPPER_DIR_SIZE;
 
+#ifdef CONFIG_ARM64_SW_TTBR0_PAN
+	reserved_ttbr0 = .;
+	. += RESERVED_TTBR0_SIZE;
+#endif
+
+	__pecoff_data_size = ABSOLUTE(. - __initdata_begin);
 	_end = .;
 
 	STABS_DEBUG

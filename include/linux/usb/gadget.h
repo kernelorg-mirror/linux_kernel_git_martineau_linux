@@ -188,7 +188,7 @@ struct usb_ep_caps {
  * @caps:The structure describing types and directions supported by endoint.
  * @maxpacket:The maximum packet size used on this endpoint.  The initial
  *	value can sometimes be reduced (hardware allowing), according to
- *      the endpoint descriptor used to configure the endpoint.
+ *	the endpoint descriptor used to configure the endpoint.
  * @maxpacket_limit:The maximum packet size value which can be handled by this
  *	endpoint. It's set once by UDC driver when endpoint is initialized, and
  *	should not be changed. Should not be confused with maxpacket.
@@ -304,6 +304,7 @@ struct usb_gadget_ops {
 	int	(*udc_start)(struct usb_gadget *,
 			struct usb_gadget_driver *);
 	int	(*udc_stop)(struct usb_gadget *);
+	void	(*udc_set_speed)(struct usb_gadget *, enum usb_device_speed);
 	struct usb_ep *(*match_ep)(struct usb_gadget *,
 			struct usb_endpoint_descriptor *,
 			struct usb_ss_ep_comp_descriptor *);
@@ -346,10 +347,14 @@ struct usb_gadget_ops {
  *	or B-Peripheral wants to take host role.
  * @quirk_ep_out_aligned_size: epout requires buffer size to be aligned to
  *	MaxPacketSize.
+ * @quirk_avoids_skb_reserve: udc/platform wants to avoid skb_reserve() in
+ *	u_ether.c to improve performance.
  * @is_selfpowered: if the gadget is self-powered.
  * @deactivated: True if gadget is deactivated - in deactivated state it cannot
  *	be connected.
  * @connected: True if gadget is connected.
+ * @lpm_capable: If the gadget max_speed is FULL or HIGH, this flag
+ *	indicates that it supports LPM as per the LPM ECN & errata.
  *
  * Gadgets have a mostly-portable "gadget driver" implementing device
  * functions, handling all usb configurations and interfaces.  Gadget
@@ -398,9 +403,11 @@ struct usb_gadget {
 	unsigned			quirk_altset_not_supp:1;
 	unsigned			quirk_stall_not_supp:1;
 	unsigned			quirk_zlp_not_supp:1;
+	unsigned			quirk_avoids_skb_reserve:1;
 	unsigned			is_selfpowered:1;
 	unsigned			deactivated:1;
 	unsigned			connected:1;
+	unsigned			lpm_capable:1;
 };
 #define work_to_gadget(w)	(container_of((w), struct usb_gadget, work))
 
@@ -418,8 +425,22 @@ static inline struct usb_gadget *dev_to_usb_gadget(struct device *dev)
 	list_for_each_entry(tmp, &(gadget)->ep_list, ep_list)
 
 /**
+ * usb_ep_align - returns @len aligned to ep's maxpacketsize.
+ * @ep: the endpoint whose maxpacketsize is used to align @len
+ * @len: buffer size's length to align to @ep's maxpacketsize
+ *
+ * This helper is used to align buffer's size to an ep's maxpacketsize.
+ */
+static inline size_t usb_ep_align(struct usb_ep *ep, size_t len)
+{
+	int max_packet_size = (size_t)usb_endpoint_maxp(ep->desc) & 0x7ff;
+
+	return round_up(len, max_packet_size);
+}
+
+/**
  * usb_ep_align_maybe - returns @len aligned to ep's maxpacketsize if gadget
- *	requires quirk_ep_out_aligned_size, otherwise reguens len.
+ *	requires quirk_ep_out_aligned_size, otherwise returns len.
  * @g: controller to check for quirk
  * @ep: the endpoint whose maxpacketsize is used to align @len
  * @len: buffer size's length to align to @ep's maxpacketsize
@@ -430,8 +451,7 @@ static inline struct usb_gadget *dev_to_usb_gadget(struct device *dev)
 static inline size_t
 usb_ep_align_maybe(struct usb_gadget *g, struct usb_ep *ep, size_t len)
 {
-	return !g->quirk_ep_out_aligned_size ? len :
-			round_up(len, (size_t)ep->desc->wMaxPacketSize);
+	return g->quirk_ep_out_aligned_size ? usb_ep_align(ep, len) : len;
 }
 
 /**
@@ -460,6 +480,16 @@ static inline int gadget_is_stall_supported(struct usb_gadget *g)
 static inline int gadget_is_zlp_supported(struct usb_gadget *g)
 {
 	return !g->quirk_zlp_not_supp;
+}
+
+/**
+ * gadget_avoids_skb_reserve - return true iff the hardware would like to avoid
+ *	skb_reserve to improve performance.
+ * @g: controller to check for quirk
+ */
+static inline int gadget_avoids_skb_reserve(struct usb_gadget *g)
+{
+	return g->quirk_avoids_skb_reserve;
 }
 
 /**

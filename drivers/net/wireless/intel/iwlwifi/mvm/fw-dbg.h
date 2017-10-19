@@ -65,8 +65,8 @@
 
 #ifndef __mvm_fw_dbg_h__
 #define __mvm_fw_dbg_h__
-#include "iwl-fw-file.h"
-#include "iwl-fw-error-dump.h"
+#include "fw/file.h"
+#include "fw/error-dump.h"
 #include "mvm.h"
 
 void iwl_mvm_fw_error_dump(struct iwl_mvm *mvm);
@@ -105,7 +105,8 @@ iwl_fw_dbg_trigger_vif_match(struct iwl_fw_dbg_trigger_tlv *trig,
 {
 	u32 trig_vif = le32_to_cpu(trig->vif_type);
 
-	return trig_vif == IWL_FW_DBG_CONF_VIF_ANY || vif->type == trig_vif;
+	return trig_vif == IWL_FW_DBG_CONF_VIF_ANY ||
+	       ieee80211_vif_type_p2p(vif) == trig_vif;
 }
 
 static inline bool

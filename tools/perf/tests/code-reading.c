@@ -1,9 +1,12 @@
+#include <errno.h>
+#include <linux/kernel.h>
 #include <linux/types.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdio.h>
-#include <ctype.h>
 #include <string.h>
+#include <sys/param.h>
 
 #include "parse-events.h"
 #include "evlist.h"
@@ -15,6 +18,8 @@
 #include "thread.h"
 
 #include "tests.h"
+
+#include "sane_ctype.h"
 
 #define BUFSZ	1024
 #define READLEN	128
@@ -224,6 +229,8 @@ static int read_object_code(u64 addr, size_t len, u8 cpumode,
 	unsigned char buf2[BUFSZ];
 	size_t ret_len;
 	u64 objdump_addr;
+	const char *objdump_name;
+	char decomp_name[KMOD_DECOMP_LEN];
 	int ret;
 
 	pr_debug("Reading object code for memory address: %#"PRIx64"\n", addr);
@@ -263,7 +270,7 @@ static int read_object_code(u64 addr, size_t len, u8 cpumode,
 	 * Converting addresses for use by objdump requires more information.
 	 * map__load() does that.  See map__rip_2objdump() for details.
 	 */
-	if (map__load(al.map, NULL))
+	if (map__load(al.map))
 		return -1;
 
 	/* objdump struggles with kcore - try each map only once */
@@ -284,9 +291,25 @@ static int read_object_code(u64 addr, size_t len, u8 cpumode,
 		state->done[state->done_cnt++] = al.map->start;
 	}
 
+	objdump_name = al.map->dso->long_name;
+	if (dso__needs_decompress(al.map->dso)) {
+		if (dso__decompress_kmodule_path(al.map->dso, objdump_name,
+						 decomp_name,
+						 sizeof(decomp_name)) < 0) {
+			pr_debug("decompression failed\n");
+			return -1;
+		}
+
+		objdump_name = decomp_name;
+	}
+
 	/* Read the object code using objdump */
 	objdump_addr = map__rip_2objdump(al.map, al.addr);
-	ret = read_via_objdump(al.map->dso->long_name, objdump_addr, buf2, len);
+	ret = read_via_objdump(objdump_name, objdump_addr, buf2, len);
+
+	if (dso__needs_decompress(al.map->dso))
+		unlink(objdump_name);
+
 	if (ret > 0) {
 		/*
 		 * The kernel maps are inaccurate - assume objdump is right in
@@ -511,7 +534,7 @@ static int do_test_code_reading(bool try_kcore)
 
 	/* Load kernel map */
 	map = machine__kernel_map(machine);
-	ret = map__load(map, NULL);
+	ret = map__load(map);
 	if (ret < 0) {
 		pr_debug("map__load failed\n");
 		goto out_err;
@@ -599,7 +622,7 @@ static int do_test_code_reading(bool try_kcore)
 				continue;
 			}
 
-			if (verbose) {
+			if (verbose > 0) {
 				char errbuf[512];
 				perf_evlist__strerror_open(evlist, errno, errbuf, sizeof(errbuf));
 				pr_debug("perf_evlist__open() failed!\n%s\n", errbuf);

@@ -100,10 +100,7 @@ static void __usbhsf_pkt_del(struct usbhs_pkt *pkt)
 
 static struct usbhs_pkt *__usbhsf_pkt_get(struct usbhs_pipe *pipe)
 {
-	if (list_empty(&pipe->list))
-		return NULL;
-
-	return list_first_entry(&pipe->list, struct usbhs_pkt, node);
+	return list_first_entry_or_null(&pipe->list, struct usbhs_pkt, node);
 }
 
 static void usbhsf_fifo_clear(struct usbhs_pipe *pipe,
@@ -285,11 +282,26 @@ static void usbhsf_fifo_clear(struct usbhs_pipe *pipe,
 			      struct usbhs_fifo *fifo)
 {
 	struct usbhs_priv *priv = usbhs_pipe_to_priv(pipe);
+	int ret = 0;
 
-	if (!usbhs_pipe_is_dcp(pipe))
-		usbhsf_fifo_barrier(priv, fifo);
+	if (!usbhs_pipe_is_dcp(pipe)) {
+		/*
+		 * This driver checks the pipe condition first to avoid -EBUSY
+		 * from usbhsf_fifo_barrier() with about 10 msec delay in
+		 * the interrupt handler if the pipe is RX direction and empty.
+		 */
+		if (usbhs_pipe_is_dir_in(pipe))
+			ret = usbhs_pipe_is_accessible(pipe);
+		if (!ret)
+			ret = usbhsf_fifo_barrier(priv, fifo);
+	}
 
-	usbhs_write(priv, fifo->ctr, BCLR);
+	/*
+	 * if non-DCP pipe, this driver should set BCLR when
+	 * usbhsf_fifo_barrier() returns 0.
+	 */
+	if (!ret)
+		usbhs_write(priv, fifo->ctr, BCLR);
 }
 
 static int usbhsf_fifo_rcv_len(struct usbhs_priv *priv,
@@ -845,9 +857,9 @@ static void xfer_work(struct work_struct *work)
 		fifo->name, usbhs_pipe_number(pipe), pkt->length, pkt->zero);
 
 	usbhs_pipe_running(pipe, 1);
-	usbhsf_dma_start(pipe, fifo);
 	usbhs_pipe_set_trans_count_if_bulk(pipe, pkt->trans);
 	dma_async_issue_pending(chan);
+	usbhsf_dma_start(pipe, fifo);
 	usbhs_pipe_enable(pipe);
 
 xfer_work_end:
@@ -871,7 +883,7 @@ static int usbhsf_dma_prepare_push(struct usbhs_pkt *pkt, int *is_done)
 
 	/* use PIO if packet is less than pio_dma_border or pipe is DCP */
 	if ((len < usbhs_get_dparam(priv, pio_dma_border)) ||
-	    usbhs_pipe_is_dcp(pipe))
+	    usbhs_pipe_type_is(pipe, USB_ENDPOINT_XFER_ISOC))
 		goto usbhsf_pio_prepare_push;
 
 	/* check data length if this driver don't use USB-DMAC */
@@ -976,7 +988,7 @@ static int usbhsf_dma_prepare_pop_with_usb_dmac(struct usbhs_pkt *pkt,
 
 	/* use PIO if packet is less than pio_dma_border or pipe is DCP */
 	if ((pkt->length < usbhs_get_dparam(priv, pio_dma_border)) ||
-	    usbhs_pipe_is_dcp(pipe))
+	    usbhs_pipe_type_is(pipe, USB_ENDPOINT_XFER_ISOC))
 		goto usbhsf_pio_prepare_pop;
 
 	fifo = usbhsf_get_dma_fifo(priv, pkt);

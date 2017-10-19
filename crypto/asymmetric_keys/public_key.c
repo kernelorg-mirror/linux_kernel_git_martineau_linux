@@ -280,6 +280,7 @@ int public_key_verify_signature(const struct public_key *pkey,
 	if (ret)
 		goto error_free_req;
 
+	ret = -ENOMEM;
 	outlen = crypto_akcipher_maxsize(tfm);
 	output = kmalloc(outlen, GFP_KERNEL);
 	if (!output)
@@ -299,7 +300,7 @@ int public_key_verify_signature(const struct public_key *pkey,
 	 * signature and returns that to us.
 	 */
 	ret = crypto_akcipher_verify(req);
-	if (ret == -EINPROGRESS) {
+	if ((ret == -EINPROGRESS) || (ret == -EBUSY)) {
 		wait_for_completion(&compl.completion);
 		ret = compl.err;
 	}

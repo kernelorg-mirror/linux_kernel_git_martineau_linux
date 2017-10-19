@@ -205,7 +205,7 @@ static int jz4780_nand_init_ecc(struct jz4780_nand_chip *nand, struct device *de
 		return -EINVAL;
 	}
 
-	mtd->ooblayout = &nand_ooblayout_lp_ops;
+	mtd_set_ooblayout(mtd, &nand_ooblayout_lp_ops);
 
 	return 0;
 }
@@ -368,9 +368,8 @@ static int jz4780_nand_probe(struct platform_device *pdev)
 	nfc->dev = dev;
 	nfc->num_banks = num_banks;
 
-	spin_lock_init(&nfc->controller.lock);
+	nand_hw_control_init(&nfc->controller);
 	INIT_LIST_HEAD(&nfc->chips);
-	init_waitqueue_head(&nfc->controller.wq);
 
 	ret = jz4780_nand_init_chips(nfc, pdev);
 	if (ret) {

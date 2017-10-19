@@ -1,7 +1,7 @@
 #ifndef _CHIP_H
 #define _CHIP_H
 /*
- * Copyright(c) 2015, 2016 Intel Corporation.
+ * Copyright(c) 2015 - 2017 Intel Corporation.
  *
  * This file is provided under a dual BSD/GPLv2 license.  When using or
  * redistributing this file, you may do so under either license.
@@ -82,7 +82,7 @@
  */
 #define CM_VAU 3
 /* HFI link credit count, AKA receive buffer depth (RBUF_DEPTH) */
-#define CM_GLOBAL_CREDITS 0x940
+#define CM_GLOBAL_CREDITS 0x880
 /* Number of PKey entries in the HW */
 #define MAX_PKEY_VALUES 16
 
@@ -254,12 +254,14 @@
 #define FAILED_LNI_VERIFY_CAP2		BIT(10)
 #define FAILED_LNI_CONFIGLT		BIT(11)
 #define HOST_HANDSHAKE_TIMEOUT		BIT(12)
+#define EXTERNAL_DEVICE_REQ_TIMEOUT	BIT(13)
 
 #define FAILED_LNI (FAILED_LNI_POLLING | FAILED_LNI_DEBOUNCE \
 			| FAILED_LNI_ESTBCOMM | FAILED_LNI_OPTEQ \
 			| FAILED_LNI_VERIFY_CAP1 \
 			| FAILED_LNI_VERIFY_CAP2 \
-			| FAILED_LNI_CONFIGLT | HOST_HANDSHAKE_TIMEOUT)
+			| FAILED_LNI_CONFIGLT | HOST_HANDSHAKE_TIMEOUT \
+			| EXTERNAL_DEVICE_REQ_TIMEOUT)
 
 /* DC_DC8051_DBG_ERR_INFO_SET_BY_8051.HOST_MSG - host message flags */
 #define HOST_REQ_DONE		BIT(0)
@@ -317,6 +319,9 @@
 
 /* DC_DC8051_CFG_MODE.GENERAL bits */
 #define DISABLE_SELF_GUID_CHECK 0x2
+
+/* Bad L2 frame error code */
+#define BAD_L2_ERR      0x6
 
 /*
  * Eager buffer minimum and maximum sizes supported by the hardware.
@@ -389,7 +394,8 @@
 #define LAST_REMOTE_STATE_COMPLETE   0x13
 #define LINK_QUALITY_INFO            0x14
 #define REMOTE_DEVICE_ID	     0x15
-#define LINK_DOWN_REASON	     0x16
+#define LINK_DOWN_REASON	     0x16 /* first byte of offset 0x16 */
+#define VERSION_PATCH		     0x16 /* last byte of offset 0x16 */
 
 /* 8051 lane specific register field IDs */
 #define TX_EQ_SETTINGS		0x00
@@ -519,10 +525,12 @@ enum {
 #define SUPPORTED_CRCS (CAP_CRC_14B | CAP_CRC_48B)
 
 /* misc status version fields */
-#define STS_FM_VERSION_A_SHIFT 16
-#define STS_FM_VERSION_A_MASK  0xff
-#define STS_FM_VERSION_B_SHIFT 24
-#define STS_FM_VERSION_B_MASK  0xff
+#define STS_FM_VERSION_MINOR_SHIFT 16
+#define STS_FM_VERSION_MINOR_MASK  0xff
+#define STS_FM_VERSION_MAJOR_SHIFT 24
+#define STS_FM_VERSION_MAJOR_MASK  0xff
+#define STS_FM_VERSION_PATCH_SHIFT 24
+#define STS_FM_VERSION_PATCH_MASK  0xff
 
 /* LCB_CFG_CRC_MODE TX_VAL and RX_VAL CRC mode values */
 #define LCB_CRC_16B			0x0	/* 16b CRC */
@@ -628,7 +636,8 @@ static inline void write_uctxt_csr(struct hfi1_devdata *dd, int ctxt,
 	write_csr(dd, offset0 + (0x1000 * ctxt), value);
 }
 
-u64 create_pbc(struct hfi1_pportdata *ppd, u64, int, u32, u32);
+u64 create_pbc(struct hfi1_pportdata *ppd, u64 flags, int srate_mbs, u32 vl,
+	       u32 dw_len);
 
 /* firmware.c */
 #define SBUS_MASTER_BROADCAST 0xfd
@@ -693,7 +702,8 @@ void fabric_serdes_reset(struct hfi1_devdata *dd);
 int read_8051_data(struct hfi1_devdata *dd, u32 addr, u32 len, u64 *result);
 
 /* chip.c */
-void read_misc_status(struct hfi1_devdata *dd, u8 *ver_a, u8 *ver_b);
+void read_misc_status(struct hfi1_devdata *dd, u8 *ver_major, u8 *ver_minor,
+		      u8 *ver_patch);
 void read_guid(struct hfi1_devdata *dd);
 int wait_fm_ready(struct hfi1_devdata *dd, u32 mstimeout);
 void set_link_down_reason(struct hfi1_pportdata *ppd, u8 lcl_reason,
@@ -706,6 +716,7 @@ void handle_link_up(struct work_struct *work);
 void handle_link_down(struct work_struct *work);
 void handle_link_downgrade(struct work_struct *work);
 void handle_link_bounce(struct work_struct *work);
+void handle_start_link(struct work_struct *work);
 void handle_sma_message(struct work_struct *work);
 void reset_qsfp(struct hfi1_pportdata *ppd);
 void qsfp_event(struct work_struct *work);
@@ -718,7 +729,8 @@ int bringup_serdes(struct hfi1_pportdata *ppd);
 void set_intr_state(struct hfi1_devdata *dd, u32 enable);
 void apply_link_downgrade_policy(struct hfi1_pportdata *ppd,
 				 int refresh_widths);
-void update_usrhead(struct hfi1_ctxtdata *, u32, u32, u32, u32, u32);
+void update_usrhead(struct hfi1_ctxtdata *rcd, u32 hd, u32 updegr, u32 egrhd,
+		    u32 intr_adjust, u32 npkts);
 int stop_drain_data_vls(struct hfi1_devdata *dd);
 int open_fill_data_vls(struct hfi1_devdata *dd);
 u32 ns_to_cclock(struct hfi1_devdata *dd, u32 ns);
@@ -1335,9 +1347,9 @@ enum {
 u64 get_all_cpu_total(u64 __percpu *cntr);
 void hfi1_start_cleanup(struct hfi1_devdata *dd);
 void hfi1_clear_tids(struct hfi1_ctxtdata *rcd);
-struct hfi1_message_header *hfi1_get_msgheader(
+struct ib_header *hfi1_get_msgheader(
 				struct hfi1_devdata *dd, __le32 *rhf_addr);
-int hfi1_init_ctxt(struct send_context *sc);
+void hfi1_init_ctxt(struct send_context *sc);
 void hfi1_put_tid(struct hfi1_devdata *dd, u32 index,
 		  u32 type, unsigned long pa, u16 order);
 void hfi1_quiet_serdes(struct hfi1_pportdata *ppd);
@@ -1350,8 +1362,10 @@ int hfi1_set_ib_cfg(struct hfi1_pportdata *ppd, int which, u32 val);
 int hfi1_set_ctxt_jkey(struct hfi1_devdata *dd, unsigned ctxt, u16 jkey);
 int hfi1_clear_ctxt_jkey(struct hfi1_devdata *dd, unsigned ctxt);
 int hfi1_set_ctxt_pkey(struct hfi1_devdata *dd, unsigned ctxt, u16 pkey);
-int hfi1_clear_ctxt_pkey(struct hfi1_devdata *dd, unsigned ctxt);
+int hfi1_clear_ctxt_pkey(struct hfi1_devdata *dd, struct hfi1_ctxtdata *ctxt);
 void hfi1_read_link_quality(struct hfi1_devdata *dd, u8 *link_quality);
+void hfi1_init_vnic_rsm(struct hfi1_devdata *dd);
+void hfi1_deinit_vnic_rsm(struct hfi1_devdata *dd);
 
 /*
  * Interrupt source table.

@@ -27,6 +27,13 @@
 #ifndef __DRM_MODES_H__
 #define __DRM_MODES_H__
 
+#include <linux/hdmi.h>
+
+#include <drm/drm_mode_object.h>
+#include <drm/drm_connector.h>
+
+struct videomode;
+
 /*
  * Note on terminology:  here, for brevity and convenience, we refer to connector
  * control chips as 'CRTCs'.  They can control any type of connector, VGA, LVDS,
@@ -190,6 +197,8 @@ enum drm_mode_status {
  * there's the hardware timings, which are corrected for interlacing,
  * double-clocking and similar things. They are provided as a convenience, and
  * can be appropriately computed using drm_mode_set_crtcinfo().
+ *
+ * For printing you can use %DRM_MODE_FMT and DRM_MODE_ARG().
  */
 struct drm_display_mode {
 	/**
@@ -400,20 +409,22 @@ struct drm_display_mode {
 	enum hdmi_picture_aspect picture_aspect_ratio;
 };
 
-/* mode specified on the command line */
-struct drm_cmdline_mode {
-	bool specified;
-	bool refresh_specified;
-	bool bpp_specified;
-	int xres, yres;
-	int bpp;
-	int refresh;
-	bool rb;
-	bool interlace;
-	bool cvt;
-	bool margins;
-	enum drm_connector_force force;
-};
+/**
+ * DRM_MODE_FMT - printf string for &struct drm_display_mode
+ */
+#define DRM_MODE_FMT    "%d:\"%s\" %d %d %d %d %d %d %d %d %d %d 0x%x 0x%x"
+
+/**
+ * DRM_MODE_ARG - printf arguments for &struct drm_display_mode
+ * @m: display mode
+ */
+#define DRM_MODE_ARG(m) \
+	(m)->base.id, (m)->name, (m)->vrefresh, (m)->clock, \
+	(m)->hdisplay, (m)->hsync_start, (m)->hsync_end, (m)->htotal, \
+	(m)->vdisplay, (m)->vsync_start, (m)->vsync_end, (m)->vtotal, \
+	(m)->type, (m)->flags
+
+#define obj_to_mode(x) container_of(x, struct drm_display_mode, base)
 
 /**
  * drm_mode_is_stereo - check for stereo mode flags
@@ -434,7 +445,7 @@ struct drm_cmdline_mode;
 struct drm_display_mode *drm_mode_create(struct drm_device *dev);
 void drm_mode_destroy(struct drm_device *dev, struct drm_display_mode *mode);
 void drm_mode_convert_to_umode(struct drm_mode_modeinfo *out,
-                               const struct drm_display_mode *in);
+			       const struct drm_display_mode *in);
 int drm_mode_convert_umode(struct drm_display_mode *out,
 			   const struct drm_mode_modeinfo *in);
 void drm_mode_probed_add(struct drm_connector *connector, struct drm_display_mode *mode);
@@ -457,13 +468,16 @@ void drm_display_mode_from_videomode(const struct videomode *vm,
 				     struct drm_display_mode *dmode);
 void drm_display_mode_to_videomode(const struct drm_display_mode *dmode,
 				   struct videomode *vm);
+void drm_bus_flags_from_videomode(const struct videomode *vm, u32 *bus_flags);
 int of_get_drm_display_mode(struct device_node *np,
-			    struct drm_display_mode *dmode,
+			    struct drm_display_mode *dmode, u32 *bus_flags,
 			    int index);
 
 void drm_mode_set_name(struct drm_display_mode *mode);
 int drm_mode_hsync(const struct drm_display_mode *mode);
 int drm_mode_vrefresh(const struct drm_display_mode *mode);
+void drm_mode_get_hv_timing(const struct drm_display_mode *mode,
+			    int *hdisplay, int *vdisplay);
 
 void drm_mode_set_crtcinfo(struct drm_display_mode *p,
 			   int adjust_flags);

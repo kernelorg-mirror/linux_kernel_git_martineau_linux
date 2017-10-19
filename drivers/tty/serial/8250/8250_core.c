@@ -218,7 +218,7 @@ static int serial_link_irq_chain(struct uart_8250_port *up)
 		spin_unlock_irq(&i->lock);
 		irq_flags |= up->port.irqflags;
 		ret = request_irq(up->port.irq, serial8250_interrupt,
-				  irq_flags, "serial", i);
+				  irq_flags, up->port.name, i);
 		if (ret < 0)
 			serial_do_unlink(i, up);
 	}
@@ -425,10 +425,10 @@ struct uart_8250_port *serial8250_get_port(int line)
 EXPORT_SYMBOL_GPL(serial8250_get_port);
 
 static void (*serial8250_isa_config)(int port, struct uart_port *up,
-	unsigned short *capabilities);
+	u32 *capabilities);
 
 void serial8250_set_isa_configurator(
-	void (*v)(int port, struct uart_port *up, unsigned short *capabilities))
+	void (*v)(int port, struct uart_port *up, u32 *capabilities))
 {
 	serial8250_isa_config = v;
 }
@@ -639,7 +639,7 @@ static int univ8250_console_match(struct console *co, char *name, int idx,
 {
 	char match[] = "uart";	/* 8250-specific earlycon name */
 	unsigned char iotype;
-	unsigned long addr;
+	resource_size_t addr;
 	int i;
 
 	if (strncmp(name, match, 4) != 0)
@@ -675,7 +675,7 @@ static struct console univ8250_console = {
 	.device		= uart_console_device,
 	.setup		= univ8250_console_setup,
 	.match		= univ8250_console_match,
-	.flags		= CON_PRINTBUFFER | CON_ANYTIME | CON_CONSDEV,
+	.flags		= CON_PRINTBUFFER | CON_ANYTIME,
 	.index		= -1,
 	.data		= &serial8250_reg,
 };
@@ -830,6 +830,7 @@ static int serial8250_probe(struct platform_device *dev)
 		uart.port.handle_irq	= p->handle_irq;
 		uart.port.handle_break	= p->handle_break;
 		uart.port.set_termios	= p->set_termios;
+		uart.port.set_ldisc	= p->set_ldisc;
 		uart.port.get_mctrl	= p->get_mctrl;
 		uart.port.pm		= p->pm;
 		uart.port.dev		= &dev->dev;
@@ -974,8 +975,6 @@ int serial8250_register_8250_port(struct uart_8250_port *up)
 
 	uart = serial8250_find_match_or_unused(&up->port);
 	if (uart && uart->port.type != PORT_8250_CIR) {
-		struct mctrl_gpios *gpios;
-
 		if (uart->port.dev)
 			uart_remove_one_port(&serial8250_reg, &uart->port);
 
@@ -1013,13 +1012,6 @@ int serial8250_register_8250_port(struct uart_8250_port *up)
 		if (up->port.flags & UPF_FIXED_TYPE)
 			uart->port.type = up->port.type;
 
-		gpios = mctrl_gpio_init(&uart->port, 0);
-		if (IS_ERR(gpios)) {
-			if (PTR_ERR(gpios) != -ENOSYS)
-				return PTR_ERR(gpios);
-		} else
-			uart->gpios = gpios;
-
 		serial8250_set_defaults(uart);
 
 		/* Possibly override default I/O functions.  */
@@ -1032,6 +1024,8 @@ int serial8250_register_8250_port(struct uart_8250_port *up)
 		/*  Possibly override set_termios call */
 		if (up->port.set_termios)
 			uart->port.set_termios = up->port.set_termios;
+		if (up->port.set_ldisc)
+			uart->port.set_ldisc = up->port.set_ldisc;
 		if (up->port.get_mctrl)
 			uart->port.get_mctrl = up->port.get_mctrl;
 		if (up->port.set_mctrl)
@@ -1197,7 +1191,7 @@ module_exit(serial8250_exit);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Generic 8250/16x50 serial driver");
 
-module_param(share_irqs, uint, 0644);
+module_param_hw(share_irqs, uint, other, 0644);
 MODULE_PARM_DESC(share_irqs, "Share IRQs with other non-8250/16x50 devices (unsafe)");
 
 module_param(nr_uarts, uint, 0644);
@@ -1207,7 +1201,7 @@ module_param(skip_txen_test, uint, 0644);
 MODULE_PARM_DESC(skip_txen_test, "Skip checking for the TXEN bug at init time");
 
 #ifdef CONFIG_SERIAL_8250_RSA
-module_param_array(probe_rsa, ulong, &probe_rsa_count, 0444);
+module_param_hw_array(probe_rsa, ulong, ioport, &probe_rsa_count, 0444);
 MODULE_PARM_DESC(probe_rsa, "Probe I/O ports for RSA");
 #endif
 MODULE_ALIAS_CHARDEV_MAJOR(TTY_MAJOR);

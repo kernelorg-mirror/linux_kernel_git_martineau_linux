@@ -17,6 +17,7 @@
 #include <drm/drm_crtc.h>
 
 #include <linux/kernel.h>
+#include <linux/list.h>
 #include <linux/reset.h>
 
 #define SUN4I_TCON_GCTL_REG			0x0
@@ -51,7 +52,7 @@
 #define SUN4I_TCON0_BASIC1_H_BACKPORCH(bp)		(((bp) - 1) & 0xfff)
 
 #define SUN4I_TCON0_BASIC2_REG			0x50
-#define SUN4I_TCON0_BASIC2_V_TOTAL(total)		((((total) * 2) & 0x1fff) << 16)
+#define SUN4I_TCON0_BASIC2_V_TOTAL(total)		(((total) & 0x1fff) << 16)
 #define SUN4I_TCON0_BASIC2_V_BACKPORCH(bp)		(((bp) - 1) & 0xfff)
 
 #define SUN4I_TCON0_BASIC3_REG			0x54
@@ -142,7 +143,13 @@
 
 #define SUN4I_TCON_MAX_CHANNELS		2
 
+struct sun4i_tcon_quirks {
+	bool	has_unknown_mux; /* sun5i has undocumented mux */
+	bool	has_channel_1;	/* a33 does not have channel 1 */
+};
+
 struct sun4i_tcon {
+	struct device			*dev;
 	struct drm_device		*drm;
 	struct regmap			*regs;
 
@@ -159,11 +166,22 @@ struct sun4i_tcon {
 	/* Reset control */
 	struct reset_control		*lcd_rst;
 
-	/* Platform adjustments */
-	bool				has_mux;
-
 	struct drm_panel		*panel;
+
+	/* Platform adjustments */
+	const struct sun4i_tcon_quirks	*quirks;
+
+	/* Associated crtc */
+	struct sun4i_crtc		*crtc;
+
+	int				id;
+
+	/* TCON list management */
+	struct list_head		list;
 };
+
+struct drm_bridge *sun4i_tcon_find_bridge(struct device_node *node);
+struct drm_panel *sun4i_tcon_find_panel(struct device_node *node);
 
 /* Global Control */
 void sun4i_tcon_disable(struct sun4i_tcon *tcon);
@@ -178,6 +196,8 @@ void sun4i_tcon_enable_vblank(struct sun4i_tcon *tcon, bool enable);
 /* Mode Related Controls */
 void sun4i_tcon_switch_interlace(struct sun4i_tcon *tcon,
 				 bool enable);
+void sun4i_tcon_set_mux(struct sun4i_tcon *tcon, int channel,
+			struct drm_encoder *encoder);
 void sun4i_tcon0_mode_set(struct sun4i_tcon *tcon,
 			  struct drm_display_mode *mode);
 void sun4i_tcon1_mode_set(struct sun4i_tcon *tcon,

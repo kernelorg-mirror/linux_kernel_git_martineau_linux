@@ -30,10 +30,11 @@
 #include <asm/elf.h>
 #include <asm/pgtable-bits.h>
 #include <asm/spram.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 /* Hardware capabilities */
 unsigned int elf_hwcap __read_mostly;
+EXPORT_SYMBOL_GPL(elf_hwcap);
 
 /*
  * Get the FPU Implementation/Revision.
@@ -289,6 +290,8 @@ static void cpu_set_fpu_opts(struct cpuinfo_mips *c)
 			    MIPS_CPU_ISA_M32R6 | MIPS_CPU_ISA_M64R6)) {
 		if (c->fpu_id & MIPS_FPIR_3D)
 			c->ases |= MIPS_ASE_MIPS3D;
+		if (c->fpu_id & MIPS_FPIR_UFRP)
+			c->options |= MIPS_CPU_UFR;
 		if (c->fpu_id & MIPS_FPIR_FREP)
 			c->options |= MIPS_CPU_FRE;
 	}
@@ -352,7 +355,12 @@ __setup("nohtw", htw_disable);
 static int mips_ftlb_disabled;
 static int mips_has_ftlb_configured;
 
-static int set_ftlb_enable(struct cpuinfo_mips *c, int enable);
+enum ftlb_flags {
+	FTLB_EN		= 1 << 0,
+	FTLB_SET_PROB	= 1 << 1,
+};
+
+static int set_ftlb_enable(struct cpuinfo_mips *c, enum ftlb_flags flags);
 
 static int __init ftlb_disable(char *s)
 {
@@ -370,8 +378,6 @@ static int __init ftlb_disable(char *s)
 		pr_warn("Can't turn FTLB off\n");
 		return 1;
 	}
-
-	back_to_back_c0_hazard();
 
 	config4 = read_c0_config4();
 
@@ -531,7 +537,7 @@ static unsigned int calculate_ftlb_probability(struct cpuinfo_mips *c)
 		return 3;
 }
 
-static int set_ftlb_enable(struct cpuinfo_mips *c, int enable)
+static int set_ftlb_enable(struct cpuinfo_mips *c, enum ftlb_flags flags)
 {
 	unsigned int config;
 
@@ -542,33 +548,34 @@ static int set_ftlb_enable(struct cpuinfo_mips *c, int enable)
 	case CPU_P6600:
 		/* proAptiv & related cores use Config6 to enable the FTLB */
 		config = read_c0_config6();
-		/* Clear the old probability value */
-		config &= ~(3 << MIPS_CONF6_FTLBP_SHIFT);
-		if (enable)
-			/* Enable FTLB */
-			write_c0_config6(config |
-					 (calculate_ftlb_probability(c)
-					  << MIPS_CONF6_FTLBP_SHIFT)
-					 | MIPS_CONF6_FTLBEN);
+
+		if (flags & FTLB_EN)
+			config |= MIPS_CONF6_FTLBEN;
 		else
-			/* Disable FTLB */
-			write_c0_config6(config &  ~MIPS_CONF6_FTLBEN);
+			config &= ~MIPS_CONF6_FTLBEN;
+
+		if (flags & FTLB_SET_PROB) {
+			config &= ~(3 << MIPS_CONF6_FTLBP_SHIFT);
+			config |= calculate_ftlb_probability(c)
+				  << MIPS_CONF6_FTLBP_SHIFT;
+		}
+
+		write_c0_config6(config);
+		back_to_back_c0_hazard();
 		break;
 	case CPU_I6400:
-		/* I6400 & related cores use Config7 to configure FTLB */
-		config = read_c0_config7();
-		/* Clear the old probability value */
-		config &= ~(3 << MIPS_CONF7_FTLBP_SHIFT);
-		write_c0_config7(config | (calculate_ftlb_probability(c)
-					   << MIPS_CONF7_FTLBP_SHIFT));
-		break;
+	case CPU_I6500:
+		/* There's no way to disable the FTLB */
+		if (!(flags & FTLB_EN))
+			return 1;
+		return 0;
 	case CPU_LOONGSON3:
 		/* Flush ITLB, DTLB, VTLB and FTLB */
 		write_c0_diag(LOONGSON_DIAG_ITLB | LOONGSON_DIAG_DTLB |
 			      LOONGSON_DIAG_VTLB | LOONGSON_DIAG_FTLB);
 		/* Loongson-3 cores use Config6 to enable the FTLB */
 		config = read_c0_config6();
-		if (enable)
+		if (flags & FTLB_EN)
 			/* Enable FTLB */
 			write_c0_config6(config & ~MIPS_CONF6_FTLBDIS);
 		else
@@ -788,6 +795,7 @@ static inline unsigned int decode_config4(struct cpuinfo_mips *c)
 				       PAGE_SIZE, config4);
 				/* Switch FTLB off */
 				set_ftlb_enable(c, 0);
+				mips_ftlb_disabled = 1;
 				break;
 			}
 			c->tlbsizeftlbsets = 1 <<
@@ -837,6 +845,8 @@ static inline unsigned int decode_config5(struct cpuinfo_mips *c)
 		c->options |= MIPS_CPU_MVH;
 	if (cpu_has_mips_r6 && (config5 & MIPS_CONF5_VP))
 		c->options |= MIPS_CPU_VP;
+	if (config5 & MIPS_CONF5_CA2)
+		c->ases |= MIPS_ASE_MIPS16E2;
 
 	return config5 & MIPS_CONF_M;
 }
@@ -852,7 +862,7 @@ static void decode_configs(struct cpuinfo_mips *c)
 	c->scache.flags = MIPS_CACHE_NOT_PRESENT;
 
 	/* Enable FTLB if present and not disabled */
-	set_ftlb_enable(c, !mips_ftlb_disabled);
+	set_ftlb_enable(c, mips_ftlb_disabled ? 0 : FTLB_EN);
 
 	ok = decode_config0(c);			/* Read Config registers.  */
 	BUG_ON(!ok);				/* Arch spec violation!	 */
@@ -901,6 +911,9 @@ static void decode_configs(struct cpuinfo_mips *c)
 			}
 		}
 	}
+
+	/* configure the FTLB write probability */
+	set_ftlb_enable(c, (mips_ftlb_disabled ? 0 : FTLB_EN) | FTLB_SET_PROB);
 
 	mips_probe_watch_registers(c);
 
@@ -996,7 +1009,8 @@ static inline unsigned int decode_guest_config3(struct cpuinfo_mips *c)
 	unsigned int config3, config3_dyn;
 
 	probe_gc0_config_dyn(config3, config3, config3_dyn,
-			     MIPS_CONF_M | MIPS_CONF3_MSA | MIPS_CONF3_CTXTC);
+			     MIPS_CONF_M | MIPS_CONF3_MSA | MIPS_CONF3_ULRI |
+			     MIPS_CONF3_CTXTC);
 
 	if (config3 & MIPS_CONF3_CTXTC)
 		c->guest.options |= MIPS_CPU_CTXTC;
@@ -1005,6 +1019,9 @@ static inline unsigned int decode_guest_config3(struct cpuinfo_mips *c)
 
 	if (config3 & MIPS_CONF3_PW)
 		c->guest.options |= MIPS_CPU_HTW;
+
+	if (config3 & MIPS_CONF3_ULRI)
+		c->guest.options |= MIPS_CPU_ULRI;
 
 	if (config3 & MIPS_CONF3_SC)
 		c->guest.options |= MIPS_CPU_SEGMENTS;
@@ -1044,7 +1061,7 @@ static inline unsigned int decode_guest_config5(struct cpuinfo_mips *c)
 	unsigned int config5, config5_dyn;
 
 	probe_gc0_config_dyn(config5, config5, config5_dyn,
-			 MIPS_CONF_M | MIPS_CONF5_MRP);
+			 MIPS_CONF_M | MIPS_CONF5_MVH | MIPS_CONF5_MRP);
 
 	if (config5 & MIPS_CONF5_MRP)
 		c->guest.options |= MIPS_CPU_MAAR;
@@ -1053,6 +1070,9 @@ static inline unsigned int decode_guest_config5(struct cpuinfo_mips *c)
 
 	if (config5 & MIPS_CONF5_LLB)
 		c->guest.options |= MIPS_CPU_RW_LLB;
+
+	if (config5 & MIPS_CONF5_MVH)
+		c->guest.options |= MIPS_CPU_MVH;
 
 	if (config5 & MIPS_CONF_M)
 		c->guest.conf |= BIT(6);
@@ -1618,6 +1638,10 @@ static inline void cpu_probe_mips(struct cpuinfo_mips *c, unsigned int cpu)
 		c->cputype = CPU_I6400;
 		__cpu_name[cpu] = "MIPS I6400";
 		break;
+	case PRID_IMP_I6500:
+		c->cputype = CPU_I6500;
+		__cpu_name[cpu] = "MIPS I6500";
+		break;
 	case PRID_IMP_M5150:
 		c->cputype = CPU_M5150;
 		__cpu_name[cpu] = "MIPS M5150";
@@ -1631,6 +1655,17 @@ static inline void cpu_probe_mips(struct cpuinfo_mips *c, unsigned int cpu)
 	decode_configs(c);
 
 	spram_config();
+
+	switch (__get_cpu_type(c->cputype)) {
+	case CPU_I6500:
+		c->options |= MIPS_CPU_SHARED_FTLB_ENTRIES;
+		/* fall-through */
+	case CPU_I6400:
+		c->options |= MIPS_CPU_SHARED_FTLB_RAM;
+		/* fall-through */
+	default:
+		break;
+	}
 }
 
 static inline void cpu_probe_alchemy(struct cpuinfo_mips *c, unsigned int cpu)
@@ -1814,10 +1849,16 @@ static inline void cpu_probe_loongson(struct cpuinfo_mips *c, unsigned int cpu)
 			set_elf_platform(cpu, "loongson3a");
 			set_isa(c, MIPS_CPU_ISA_M64R2);
 			break;
+		case PRID_REV_LOONGSON3A_R3:
+			c->cputype = CPU_LOONGSON3;
+			__cpu_name[cpu] = "ICT Loongson-3";
+			set_elf_platform(cpu, "loongson3a");
+			set_isa(c, MIPS_CPU_ISA_M64R2);
+			break;
 		}
 
 		decode_configs(c);
-		c->options |= MIPS_CPU_TLBINV | MIPS_CPU_LDPTE;
+		c->options |= MIPS_CPU_FTLB | MIPS_CPU_TLBINV | MIPS_CPU_LDPTE;
 		c->writecombine = _CACHE_UNCACHED_ACCELERATED;
 		break;
 	default:
@@ -1938,6 +1979,12 @@ void cpu_probe(void)
 {
 	struct cpuinfo_mips *c = &current_cpu_data;
 	unsigned int cpu = smp_processor_id();
+
+	/*
+	 * Set a default elf platform, cpu probe may later
+	 * overwrite it with a more precise value
+	 */
+	set_elf_platform(cpu, "mips");
 
 	c->processor_id = PRID_IMP_UNKNOWN;
 	c->fpu_id	= FPIR_IMP_NONE;

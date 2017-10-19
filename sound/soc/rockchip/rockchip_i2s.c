@@ -57,6 +57,7 @@ static int i2s_runtime_suspend(struct device *dev)
 {
 	struct rk_i2s_dev *i2s = dev_get_drvdata(dev);
 
+	regcache_cache_only(i2s->regmap, true);
 	clk_disable_unprepare(i2s->mclk);
 
 	return 0;
@@ -73,7 +74,14 @@ static int i2s_runtime_resume(struct device *dev)
 		return ret;
 	}
 
-	return 0;
+	regcache_cache_only(i2s->regmap, false);
+	regcache_mark_dirty(i2s->regmap);
+
+	ret = regcache_sync(i2s->regmap);
+	if (ret)
+		clk_disable_unprepare(i2s->mclk);
+
+	return ret;
 }
 
 static inline struct rk_i2s_dev *to_info(struct snd_soc_dai *dai)
@@ -108,6 +116,7 @@ static void rockchip_snd_txctrl(struct rk_i2s_dev *i2s, int on)
 					   I2S_XFER_TXS_STOP |
 					   I2S_XFER_RXS_STOP);
 
+			udelay(150);
 			regmap_update_bits(i2s->regmap, I2S_CLR,
 					   I2S_CLR_TXC | I2S_CLR_RXC,
 					   I2S_CLR_TXC | I2S_CLR_RXC);
@@ -154,6 +163,7 @@ static void rockchip_snd_rxctrl(struct rk_i2s_dev *i2s, int on)
 					   I2S_XFER_TXS_STOP |
 					   I2S_XFER_RXS_STOP);
 
+			udelay(150);
 			regmap_update_bits(i2s->regmap, I2S_CLR,
 					   I2S_CLR_TXC | I2S_CLR_RXC,
 					   I2S_CLR_TXC | I2S_CLR_RXC);
@@ -196,7 +206,21 @@ static int rockchip_i2s_set_fmt(struct snd_soc_dai *cpu_dai,
 
 	regmap_update_bits(i2s->regmap, I2S_CKR, mask, val);
 
-	mask = I2S_TXCR_IBM_MASK;
+	mask = I2S_CKR_CKP_MASK;
+	switch (fmt & SND_SOC_DAIFMT_INV_MASK) {
+	case SND_SOC_DAIFMT_NB_NF:
+		val = I2S_CKR_CKP_NEG;
+		break;
+	case SND_SOC_DAIFMT_IB_NF:
+		val = I2S_CKR_CKP_POS;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	regmap_update_bits(i2s->regmap, I2S_CKR, mask, val);
+
+	mask = I2S_TXCR_IBM_MASK | I2S_TXCR_TFS_MASK | I2S_TXCR_PBM_MASK;
 	switch (fmt & SND_SOC_DAIFMT_FORMAT_MASK) {
 	case SND_SOC_DAIFMT_RIGHT_J:
 		val = I2S_TXCR_IBM_RSJM;
@@ -207,13 +231,19 @@ static int rockchip_i2s_set_fmt(struct snd_soc_dai *cpu_dai,
 	case SND_SOC_DAIFMT_I2S:
 		val = I2S_TXCR_IBM_NORMAL;
 		break;
+	case SND_SOC_DAIFMT_DSP_A: /* PCM no delay mode */
+		val = I2S_TXCR_TFS_PCM;
+		break;
+	case SND_SOC_DAIFMT_DSP_B: /* PCM delay 1 mode */
+		val = I2S_TXCR_TFS_PCM | I2S_TXCR_PBM_MODE(1);
+		break;
 	default:
 		return -EINVAL;
 	}
 
 	regmap_update_bits(i2s->regmap, I2S_TXCR, mask, val);
 
-	mask = I2S_RXCR_IBM_MASK;
+	mask = I2S_RXCR_IBM_MASK | I2S_RXCR_TFS_MASK | I2S_RXCR_PBM_MASK;
 	switch (fmt & SND_SOC_DAIFMT_FORMAT_MASK) {
 	case SND_SOC_DAIFMT_RIGHT_J:
 		val = I2S_RXCR_IBM_RSJM;
@@ -223,6 +253,12 @@ static int rockchip_i2s_set_fmt(struct snd_soc_dai *cpu_dai,
 		break;
 	case SND_SOC_DAIFMT_I2S:
 		val = I2S_RXCR_IBM_NORMAL;
+		break;
+	case SND_SOC_DAIFMT_DSP_A: /* PCM no delay mode */
+		val = I2S_RXCR_TFS_PCM;
+		break;
+	case SND_SOC_DAIFMT_DSP_B: /* PCM delay 1 mode */
+		val = I2S_RXCR_TFS_PCM | I2S_RXCR_PBM_MODE(1);
 		break;
 	default:
 		return -EINVAL;
@@ -607,12 +643,13 @@ static int rockchip_i2s_probe(struct platform_device *pdev)
 			goto err_pm_disable;
 	}
 
-	soc_dai = devm_kzalloc(&pdev->dev,
+	soc_dai = devm_kmemdup(&pdev->dev, &rockchip_i2s_dai,
 			       sizeof(*soc_dai), GFP_KERNEL);
-	if (!soc_dai)
-		return -ENOMEM;
+	if (!soc_dai) {
+		ret = -ENOMEM;
+		goto err_pm_disable;
+	}
 
-	memcpy(soc_dai, &rockchip_i2s_dai, sizeof(*soc_dai));
 	if (!of_property_read_u32(node, "rockchip,playback-channels", &val)) {
 		if (val >= 2 && val <= 8)
 			soc_dai->playback.channels_max = val;
