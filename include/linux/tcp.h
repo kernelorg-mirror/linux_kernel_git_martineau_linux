@@ -131,6 +131,7 @@ struct tcp_out_options {
 	__u8 *hash_location;	/* temporary pointer, overloaded */
 	__u32 tsval, tsecr;	/* need to include OPTION_TS */
 	struct tcp_fastopen_cookie *fastopen_cookie;	/* Fast open cookie */
+	struct tcp_md5sig_key *md5; /* TCP_MD5 signature key */
 };
 
 /* This is the max number of SACKS that we'll generate and process. It's safe
