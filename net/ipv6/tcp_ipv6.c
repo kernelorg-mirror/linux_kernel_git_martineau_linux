@@ -576,20 +576,6 @@ static void tcp_v6_send_response(const struct sock *sk, struct sk_buff *skb, u32
 
 	if (tsecr)
 		tot_len += TCPOLEN_TSTAMP_ALIGNED;
-#ifdef CONFIG_TCP_MD5SIG
-{
-	int ret;
-
-	ret = tcp_v6_md5_send_response_prepare(skb, 0,
-					       MAX_TCP_OPTION_SPACE - tot_len,
-					       &extraopts, sk);
-
-	if (ret == -1)
-		goto out;
-
-	tot_len += ret;
-}
-#endif
 
 	if (sk)
 		extopt_list = tcp_extopt_get_list(sk);
@@ -637,11 +623,6 @@ static void tcp_v6_send_response(const struct sock *sk, struct sk_buff *skb, u32
 		*topt++ = htonl(tsval);
 		*topt++ = htonl(tsecr);
 	}
-
-#ifdef CONFIG_TCP_MD5SIG
-	if (extraopts.md5)
-		tcp_v6_md5_send_response_write(topt, skb, t1, &extraopts, sk);
-#endif
 
 	if (unlikely(extopt_list && !hlist_empty(extopt_list)))
 		tcp_extopt_response_write(topt, skb, t1, &extraopts, sk);
@@ -955,10 +936,6 @@ static struct sock *tcp_v6_syn_recv_sock(const struct sock *sk, struct sk_buff *
 
 	newinet->inet_daddr = newinet->inet_saddr = LOOPBACK4_IPV6;
 	newinet->inet_rcv_saddr = LOOPBACK4_IPV6;
-
-#ifdef CONFIG_TCP_MD5SIG
-	tcp_v6_md5_syn_recv_sock(sk, newsk);
-#endif
 
 	if (__inet_inherit_port(sk, newsk) < 0) {
 		inet_csk_prepare_forced_close(newsk);

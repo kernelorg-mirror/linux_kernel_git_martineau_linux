@@ -127,11 +127,11 @@ struct tcp_out_options {
 	u16 mss;		/* 0 to disable */
 	u8 ws;			/* window scale, 0 to disable */
 	u8 num_sack_blocks;	/* number of SACK blocks to include */
-	u8 hash_size;		/* bytes in hash_location */
-	__u8 *hash_location;	/* temporary pointer, overloaded */
 	__u32 tsval, tsecr;	/* need to include OPTION_TS */
 	struct tcp_fastopen_cookie *fastopen_cookie;	/* Fast open cookie */
+#ifdef CONFIG_TCP_MD5SIG
 	struct tcp_md5sig_key *md5; /* TCP_MD5 signature key */
+#endif
 };
 
 /* This is the max number of SACKS that we'll generate and process. It's safe
@@ -391,9 +391,6 @@ struct tcp_sock {
 #ifdef CONFIG_TCP_MD5SIG
 /* TCP AF-Specific parts; only used by MD5 Signature support so far */
 	const struct tcp_sock_af_ops	*af_specific;
-
-/* TCP MD5 Signature Option information */
-	struct tcp_md5sig_info	__rcu *md5sig_info;
 #endif
 
 /* TCP fastopen related information */
@@ -451,9 +448,6 @@ struct tcp_timewait_sock {
 	long			  tw_ts_recent_stamp;
 
 	struct hlist_head	  tcp_option_list;
-#ifdef CONFIG_TCP_MD5SIG
-	struct tcp_md5sig_key	  *tw_md5_key;
-#endif
 };
 
 static inline struct tcp_timewait_sock *tcp_twsk(const struct sock *sk)

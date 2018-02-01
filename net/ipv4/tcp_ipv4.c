@@ -603,9 +603,6 @@ static void tcp_v4_send_reset(const struct sock *sk, struct sk_buff *skb)
 	struct ip_reply_arg arg;
 	struct net *net;
 	int offset = 0;
-#ifdef CONFIG_TCP_MD5SIG
-	int ret;
-#endif
 
 	/* Never send a reset in response to a reset. */
 	if (th->rst)
@@ -643,26 +640,11 @@ static void tcp_v4_send_reset(const struct sock *sk, struct sk_buff *skb)
 
 	net = sk ? sock_net(sk) : dev_net(skb_dst(skb)->dev);
 
-#ifdef CONFIG_TCP_MD5SIG
-	ret = tcp_v4_md5_send_response_prepare(skb, 0,
-					       MAX_TCP_OPTION_SPACE - arg.iov[0].iov_len,
-					       &opts, sk);
-
-	if (ret == -1)
-		return;
-
-	arg.iov[0].iov_len += ret;
-#endif
-
 	if (unlikely(extopt_list && !hlist_empty(extopt_list))) {
 		unsigned int remaining;
 		int used;
 
 		remaining = sizeof(rep.opt);
-#ifdef CONFIG_TCP_MD5SIG
-		if (opts.md5)
-			remaining -= TCPOLEN_MD5SIG_ALIGNED;
-#endif
 
 		used = tcp_extopt_response_prepare(skb, TCPHDR_RST, remaining,
 						   &opts, sk);
@@ -674,9 +656,6 @@ static void tcp_v4_send_reset(const struct sock *sk, struct sk_buff *skb)
 		offset += used / 4;
 	}
 
-#ifdef CONFIG_TCP_MD5SIG
-	tcp_v4_md5_send_response_write(&rep.opt[offset], skb, &rep.th, &opts, sk);
-#endif
 	arg.csum = csum_tcpudp_nofold(ip_hdr(skb)->daddr,
 				      ip_hdr(skb)->saddr, /* XXX */
 				      arg.iov[0].iov_len, IPPROTO_TCP, 0);
@@ -727,9 +706,6 @@ static void tcp_v4_send_ack(const struct sock *sk,
 	struct net *net = sock_net(sk);
 	struct ip_reply_arg arg;
 	int offset = 0;
-#ifdef CONFIG_TCP_MD5SIG
-	int ret;
-#endif
 
 	extopt_list = tcp_extopt_get_list(sk);
 
@@ -758,27 +734,11 @@ static void tcp_v4_send_ack(const struct sock *sk,
 	rep.th.ack     = 1;
 	rep.th.window  = htons(win);
 
-#ifdef CONFIG_TCP_MD5SIG
-	ret = tcp_v4_md5_send_response_prepare(skb, 0,
-					       MAX_TCP_OPTION_SPACE - arg.iov[0].iov_len,
-					       &opts, sk);
-
-	if (ret == -1)
-		return;
-
-	arg.iov[0].iov_len += ret;
-#endif
-
 	if (unlikely(extopt_list && !hlist_empty(extopt_list))) {
 		unsigned int remaining;
 		int used;
 
 		remaining = sizeof(rep.th) + sizeof(rep.opt) - arg.iov[0].iov_len;
-
-#ifdef CONFIG_TCP_MD5SIG
-		if (opts.md5)
-			remaining -= TCPOLEN_MD5SIG_ALIGNED;
-#endif
 
 		memset(&opts, 0, sizeof(opts));
 		used = tcp_extopt_response_prepare(skb, TCPHDR_ACK, remaining,
@@ -791,14 +751,6 @@ static void tcp_v4_send_ack(const struct sock *sk,
 
 		offset += used / 4;
 	}
-
-#ifdef CONFIG_TCP_MD5SIG
-	if (opts.md5) {
-		arg.iov[0].iov_len += TCPOLEN_MD5SIG_ALIGNED;
-		rep.th.doff = arg.iov[0].iov_len / 4;
-	}
-	tcp_v4_md5_send_response_write(&rep.opt[offset], skb, &rep.th, &opts, sk);
-#endif
 
 	arg.flags = reply_flags;
 	arg.csum = csum_tcpudp_nofold(ip_hdr(skb)->daddr,
@@ -1025,10 +977,6 @@ struct sock *tcp_v4_syn_recv_sock(const struct sock *sk, struct sk_buff *skb,
 	newtp->advmss = tcp_mss_clamp(tcp_sk(sk), dst_metric_advmss(dst));
 
 	tcp_initialize_rcv_mss(newsk);
-
-#ifdef CONFIG_TCP_MD5SIG
-	tcp_v4_md5_syn_recv_sock(sk, newsk);
-#endif
 
 	if (__inet_inherit_port(sk, newsk) < 0)
 		goto put_and_exit;
@@ -1532,9 +1480,6 @@ void tcp_v4_destroy_sock(struct sock *sk)
 
 	if (unlikely(!hlist_empty(&tp->tcp_option_list)))
 		tcp_extopt_destroy(sk);
-#ifdef CONFIG_TCP_MD5SIG
-	tcp_v4_md5_destroy_sock(sk);
-#endif
 
 	/* Clean up a referenced TCP bind bucket. */
 	if (inet_csk(sk)->icsk_bind_hash)

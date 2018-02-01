@@ -22,7 +22,6 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/sysctl.h>
-#include <linux/tcp_md5.h>
 #include <linux/workqueue.h>
 #include <linux/static_key.h>
 #include <net/tcp.h>
@@ -295,9 +294,6 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 			tcp_extopt_move(sk, (struct sock *)tw);
 			INIT_HLIST_HEAD(&tp->tcp_option_list);
 		}
-#ifdef CONFIG_TCP_MD5SIG
-		tcp_md5_time_wait(sk, tw);
-#endif
 
 		/* Get the TIME_WAIT timeout firing. */
 		if (timeo < rto)
@@ -333,10 +329,6 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 void tcp_twsk_destructor(struct sock *sk)
 {
 	struct tcp_timewait_sock *twsk = tcp_twsk(sk);
-
-#ifdef CONFIG_TCP_MD5SIG
-	tcp_md5_twsk_destructor(twsk);
-#endif
 
 	if (unlikely(!hlist_empty(&twsk->tcp_option_list)))
 		tcp_extopt_destroy(sk);
@@ -522,10 +514,6 @@ struct sock *tcp_create_openreq_child(const struct sock *sk,
 			newtp->tcp_header_len = sizeof(struct tcphdr);
 		}
 		newtp->tsoffset = treq->ts_off;
-#ifdef CONFIG_TCP_MD5SIG
-		newtp->md5sig_info = NULL;	/*XXX*/
-		tcp_md5_add_header_len(sk, newsk);
-#endif
 		if (unlikely(!hlist_empty(&treq->tcp_option_list)))
 			newtp->tcp_header_len += tcp_extopt_add_header(req_to_sk(req), newsk);
 

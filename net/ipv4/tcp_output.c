@@ -42,7 +42,6 @@
 #include <linux/gfp.h>
 #include <linux/module.h>
 #include <linux/static_key.h>
-#include <linux/tcp_md5.h>
 
 #include <trace/events/tcp.h>
 
@@ -424,14 +423,6 @@ static void tcp_options_write(__be32 *ptr, struct sk_buff *skb, struct sock *sk,
 
 	extopt_list = tcp_extopt_get_list(sk);
 
-	if (unlikely(OPTION_MD5 & options)) {
-		*ptr++ = htonl((TCPOPT_NOP << 24) | (TCPOPT_NOP << 16) |
-			       (TCPOPT_MD5SIG << 8) | TCPOLEN_MD5SIG);
-		/* overload cookie hash location */
-		opts->hash_location = (__u8 *)ptr;
-		ptr += 4;
-	}
-
 	if (unlikely(opts->mss)) {
 		*ptr++ = htonl((TCPOPT_MSS << 24) |
 			       (TCPOLEN_MSS << 16) |
@@ -527,14 +518,6 @@ static unsigned int tcp_syn_options(struct sock *sk, struct sk_buff *skb,
 	unsigned int remaining = MAX_TCP_OPTION_SPACE;
 	struct tcp_fastopen_request *fastopen = tp->fastopen_req;
 
-#ifdef CONFIG_TCP_MD5SIG
-	opts->md5 = tp->af_specific->md5_lookup(sk, sk);
-	if (opts->md5) {
-		opts->options |= OPTION_MD5;
-		remaining -= TCPOLEN_MD5SIG_ALIGNED;
-	}
-#endif
-
 	/* We always get an MSS option.  The option bytes which will be seen in
 	 * normal data packets should timestamps be used, must be in the MSS
 	 * advertised.  But we subtract them from tp->mss_cache so that
@@ -547,7 +530,7 @@ static unsigned int tcp_syn_options(struct sock *sk, struct sk_buff *skb,
 	opts->mss = tcp_advertise_mss(sk);
 	remaining -= TCPOLEN_MSS_ALIGNED;
 
-	if (likely(sock_net(sk)->ipv4.sysctl_tcp_timestamps && !opts->md5)) {
+	if (likely(sock_net(sk)->ipv4.sysctl_tcp_timestamps)) {
 		opts->options |= OPTION_TS;
 		opts->tsval = tcp_skb_timestamp(skb) + tp->tsoffset;
 		opts->tsecr = tp->rx_opt.ts_recent;
@@ -595,20 +578,6 @@ static unsigned int tcp_synack_options(const struct sock *sk,
 {
 	struct inet_request_sock *ireq = inet_rsk(req);
 	unsigned int remaining = MAX_TCP_OPTION_SPACE;
-
-#ifdef CONFIG_TCP_MD5SIG
-	if (opts->md5) {
-		opts->options |= OPTION_MD5;
-		remaining -= TCPOLEN_MD5SIG_ALIGNED;
-
-		/* We can't fit any SACK blocks in a packet with MD5 + TS
-		 * options. There was discussion about disabling SACK
-		 * rather than TS in order to fit in better with old,
-		 * buggy kernels, but that was deemed to be unnecessary.
-		 */
-		ireq->tstamp_ok &= !ireq->sack_ok;
-	}
-#endif
 
 	/* We always send an MSS option. */
 	opts->mss = mss;
@@ -669,16 +638,6 @@ static unsigned int tcp_established_options(struct sock *sk, struct sk_buff *skb
 		opts->tsecr = tp->rx_opt.ts_recent;
 		size += TCPOLEN_TSTAMP_ALIGNED;
 	}
-
-#ifdef CONFIG_TCP_MD5SIG
-	opts->md5 = tp->af_specific->md5_lookup(sk, sk);
-	if (unlikely(opts->md5)) {
-		opts->options |= OPTION_MD5;
-		size += TCPOLEN_MD5SIG_ALIGNED;
-	}
-#else
-	opts->md5 = NULL;
-#endif
 
 	if (unlikely(!hlist_empty(&tp->tcp_option_list)))
 		size += tcp_extopt_prepare(skb, 0, MAX_TCP_OPTION_SPACE - size,
@@ -1082,14 +1041,6 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 		th->window	= htons(min(tp->rcv_wnd, 65535U));
 	}
 	tcp_options_write((__be32 *)(th + 1), skb, sk, &opts);
-#ifdef CONFIG_TCP_MD5SIG
-	/* Calculate the MD5 hash, as we have all we need now */
-	if (opts.md5) {
-		sk_nocaps_add(sk, NETIF_F_GSO_MASK);
-		tp->af_specific->calc_md5_hash(opts.hash_location,
-					       opts.md5, sk, skb);
-	}
-#endif
 
 	icsk->icsk_af_ops->send_check(sk, skb);
 
@@ -3164,10 +3115,6 @@ struct sk_buff *tcp_make_synack(const struct sock *sk, struct dst_entry *dst,
 #endif
 		skb->skb_mstamp = tcp_clock_us();
 
-#ifdef CONFIG_TCP_MD5SIG
-	rcu_read_lock();
-	opts.md5 = tcp_rsk(req)->af_specific->req_md5_lookup(sk, req_to_sk(req));
-#endif
 	skb_set_hash(skb, tcp_rsk(req)->txhash, PKT_HASH_TYPE_L4);
 	tcp_header_size = tcp_synack_options(sk, req, mss, skb, &opts,
 					     foc) + sizeof(*th);
@@ -3193,15 +3140,6 @@ struct sk_buff *tcp_make_synack(const struct sock *sk, struct dst_entry *dst,
 	th->doff = (tcp_header_size >> 2);
 	tcp_options_write((__be32 *)(th + 1), skb, req_to_sk(req), &opts);
 	__TCP_INC_STATS(sock_net(sk), TCP_MIB_OUTSEGS);
-
-#ifdef CONFIG_TCP_MD5SIG
-	/* Okay, we have all we need - do the md5 hash if needed */
-	if (opts.md5)
-		tcp_rsk(req)->af_specific->calc_md5_hash(opts.hash_location,
-							 opts.md5,
-							 req_to_sk(req), skb);
-	rcu_read_unlock();
-#endif
 
 	/* Do not fool tcpdump (if any), clean our debris */
 	skb->tstamp = 0;
@@ -3242,10 +3180,6 @@ static void tcp_connect_init(struct sock *sk)
 	tp->tcp_header_len = sizeof(struct tcphdr);
 	if (sock_net(sk)->ipv4.sysctl_tcp_timestamps)
 		tp->tcp_header_len += TCPOLEN_TSTAMP_ALIGNED;
-
-#ifdef CONFIG_TCP_MD5SIG
-	tcp_md5_add_header_len(sk, sk);
-#endif
 
 	if (unlikely(!hlist_empty(&tp->tcp_option_list)))
 		tp->tcp_header_len += tcp_extopt_add_header(sk, sk);
