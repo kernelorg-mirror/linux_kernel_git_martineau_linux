@@ -27,27 +27,13 @@ struct tcp_md5sig_key {
 	struct rcu_head		rcu;
 };
 
-extern const struct tcp_sock_af_ops tcp_sock_ipv4_specific;
-extern const struct tcp_sock_af_ops tcp_sock_ipv6_specific;
-extern const struct tcp_sock_af_ops tcp_sock_ipv6_mapped_specific;
-
 /* - functions */
-int tcp_v4_md5_hash_skb(char *md5_hash, const struct tcp_md5sig_key *key,
-			const struct sock *sk, const struct sk_buff *skb);
 
-struct tcp_md5sig_key *tcp_v4_md5_lookup(const struct sock *sk,
-					 const struct sock *addr_sk);
+int tcp_md5_parse_keys(struct sock *sk, int optname, char __user *optval,
+		       int optlen);
 
 bool tcp_v4_inbound_md5_hash(const struct sock *sk,
 			     const struct sk_buff *skb);
-
-struct tcp_md5sig_key *tcp_v6_md5_lookup(const struct sock *sk,
-					 const struct sock *addr_sk);
-
-int tcp_v6_md5_hash_skb(char *md5_hash,
-			const struct tcp_md5sig_key *key,
-			const struct sock *sk,
-			const struct sk_buff *skb);
 
 bool tcp_v6_inbound_md5_hash(const struct sock *sk,
 			     const struct sk_buff *skb);

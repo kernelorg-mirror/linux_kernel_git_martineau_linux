@@ -889,10 +889,6 @@ struct request_sock_ops tcp_request_sock_ops __read_mostly = {
 
 static const struct tcp_request_sock_ops tcp_request_sock_ipv4_ops = {
 	.mss_clamp	=	TCP_MSS_DEFAULT,
-#ifdef CONFIG_TCP_MD5SIG
-	.req_md5_lookup	=	tcp_v4_md5_lookup,
-	.calc_md5_hash	=	tcp_v4_md5_hash_skb,
-#endif
 	.init_req	=	tcp_v4_init_req,
 #ifdef CONFIG_SYN_COOKIES
 	.cookie_init_seq =	cookie_v4_init_sequence,
@@ -1449,10 +1445,6 @@ static int tcp_v4_init_sock(struct sock *sk)
 	tcp_init_sock(sk);
 
 	icsk->icsk_af_ops = &ipv4_specific;
-
-#ifdef CONFIG_TCP_MD5SIG
-	tcp_sk(sk)->af_specific = &tcp_sock_ipv4_specific;
-#endif
 
 	return 0;
 }

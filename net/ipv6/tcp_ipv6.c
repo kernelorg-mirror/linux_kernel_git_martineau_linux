@@ -207,9 +207,6 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 
 		icsk->icsk_af_ops = &ipv6_mapped;
 		sk->sk_backlog_rcv = tcp_v4_do_rcv;
-#ifdef CONFIG_TCP_MD5SIG
-		tp->af_specific = &tcp_sock_ipv6_mapped_specific;
-#endif
 
 		err = tcp_v4_connect(sk, (struct sockaddr *)&sin, sizeof(sin));
 
@@ -217,9 +214,6 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 			icsk->icsk_ext_hdr_len = exthdrlen;
 			icsk->icsk_af_ops = &ipv6_specific;
 			sk->sk_backlog_rcv = tcp_v6_do_rcv;
-#ifdef CONFIG_TCP_MD5SIG
-			tp->af_specific = &tcp_sock_ipv6_specific;
-#endif
 			goto failure;
 		}
 		np->saddr = sk->sk_v6_rcv_saddr;
@@ -542,10 +536,6 @@ struct request_sock_ops tcp6_request_sock_ops __read_mostly = {
 static const struct tcp_request_sock_ops tcp_request_sock_ipv6_ops = {
 	.mss_clamp	=	IPV6_MIN_MTU - sizeof(struct tcphdr) -
 				sizeof(struct ipv6hdr),
-#ifdef CONFIG_TCP_MD5SIG
-	.req_md5_lookup	=	tcp_v6_md5_lookup,
-	.calc_md5_hash	=	tcp_v6_md5_hash_skb,
-#endif
 	.init_req	=	tcp_v6_init_req,
 #ifdef CONFIG_SYN_COOKIES
 	.cookie_init_seq =	cookie_v6_init_sequence,
@@ -820,9 +810,6 @@ static struct sock *tcp_v6_syn_recv_sock(const struct sock *sk, struct sk_buff *
 
 		inet_csk(newsk)->icsk_af_ops = &ipv6_mapped;
 		newsk->sk_backlog_rcv = tcp_v4_do_rcv;
-#ifdef CONFIG_TCP_MD5SIG
-		newtp->af_specific = &tcp_sock_ipv6_mapped_specific;
-#endif
 
 		newnp->ipv6_mc_list = NULL;
 		newnp->ipv6_ac_list = NULL;
@@ -1428,10 +1415,6 @@ static int tcp_v6_init_sock(struct sock *sk)
 	tcp_init_sock(sk);
 
 	icsk->icsk_af_ops = &ipv6_specific;
-
-#ifdef CONFIG_TCP_MD5SIG
-	tcp_sk(sk)->af_specific = &tcp_sock_ipv6_specific;
-#endif
 
 	return 0;
 }

@@ -1730,32 +1730,8 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 		     const struct tcp_request_sock_ops *af_ops,
 		     struct sock *sk, struct sk_buff *skb);
 
-/* TCP af-specific functions */
-struct tcp_sock_af_ops {
-#ifdef CONFIG_TCP_MD5SIG
-	struct tcp_md5sig_key	*(*md5_lookup) (const struct sock *sk,
-						const struct sock *addr_sk);
-	int		(*calc_md5_hash)(char *location,
-					 const struct tcp_md5sig_key *md5,
-					 const struct sock *sk,
-					 const struct sk_buff *skb);
-	int		(*md5_parse)(struct sock *sk,
-				     int optname,
-				     char __user *optval,
-				     int optlen);
-#endif
-};
-
 struct tcp_request_sock_ops {
 	u16 mss_clamp;
-#ifdef CONFIG_TCP_MD5SIG
-	struct tcp_md5sig_key *(*req_md5_lookup)(const struct sock *sk,
-						 const struct sock *addr_sk);
-	int		(*calc_md5_hash) (char *location,
-					  const struct tcp_md5sig_key *md5,
-					  const struct sock *sk,
-					  const struct sk_buff *skb);
-#endif
 	void (*init_req)(struct request_sock *req,
 			 const struct sock *sk_listener,
 			 struct sk_buff *skb);

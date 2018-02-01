@@ -388,11 +388,6 @@ struct tcp_sock {
 			   * while socket was owned by user.
 			   */
 
-#ifdef CONFIG_TCP_MD5SIG
-/* TCP AF-Specific parts; only used by MD5 Signature support so far */
-	const struct tcp_sock_af_ops	*af_specific;
-#endif
-
 /* TCP fastopen related information */
 	struct tcp_fastopen_request *fastopen_req;
 	/* fastopen_rsk points to request_sock that resulted in this big

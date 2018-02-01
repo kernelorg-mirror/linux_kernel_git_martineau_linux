@@ -2828,7 +2828,7 @@ static int do_tcp_setsockopt(struct sock *sk, int level,
 	case TCP_MD5SIG:
 	case TCP_MD5SIG_EXT:
 		/* Read the IP->Key mappings from userspace */
-		err = tp->af_specific->md5_parse(sk, optname, optval, optlen);
+		err = tcp_md5_parse_keys(sk, optname, optval, optlen);
 		break;
 #endif
 	case TCP_USER_TIMEOUT:

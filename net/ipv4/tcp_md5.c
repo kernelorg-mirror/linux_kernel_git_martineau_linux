@@ -336,12 +336,13 @@ static int tcp_md5_hash_key(struct tcp_md5sig_pool *hp,
 	return crypto_ahash_update(hp->md5_req);
 }
 
-static int tcp_v4_parse_md5_keys(struct sock *sk, int optname,
-				 char __user *optval, int optlen)
+int tcp_md5_parse_keys(struct sock *sk, int optname, char __user *optval,
+		       int optlen)
 {
+	u8 prefixlen = 32, maxprefixlen;
+	union tcp_md5_addr *tcpmd5addr;
 	struct tcp_md5sig cmd;
-	struct sockaddr_in *sin = (struct sockaddr_in *)&cmd.tcpm_addr;
-	u8 prefixlen = 32;
+	unsigned short family;
 
 	if (optlen < sizeof(cmd))
 		return -EINVAL;
@@ -349,76 +350,48 @@ static int tcp_v4_parse_md5_keys(struct sock *sk, int optname,
 	if (copy_from_user(&cmd, optval, sizeof(cmd)))
 		return -EFAULT;
 
-	if (sin->sin_family != AF_INET)
+	family = cmd.tcpm_addr.ss_family;
+
+	if (family != AF_INET && family != AF_INET6)
 		return -EINVAL;
+
+	if (sk->sk_family != family)
+		return -EINVAL;
+
+	if (family == AF_INET6) {
+		struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&cmd.tcpm_addr;
+
+		if (!ipv6_addr_v4mapped(&sin6->sin6_addr)) {
+			tcpmd5addr = (union tcp_md5_addr *)&sin6->sin6_addr;
+			maxprefixlen = 128;
+		} else {
+			tcpmd5addr = (union tcp_md5_addr *)&sin6->sin6_addr.s6_addr32[3];
+			family = AF_INET;
+			maxprefixlen = 32;
+		}
+	} else {
+		struct sockaddr_in *sin = (struct sockaddr_in *)&cmd.tcpm_addr;
+
+		tcpmd5addr = (union tcp_md5_addr *)&sin->sin_addr;
+		maxprefixlen = 32;
+	}
 
 	if (optname == TCP_MD5SIG_EXT &&
 	    cmd.tcpm_flags & TCP_MD5SIG_FLAG_PREFIX) {
 		prefixlen = cmd.tcpm_prefixlen;
-		if (prefixlen > 32)
+		if (prefixlen > maxprefixlen)
 			return -EINVAL;
 	}
 
 	if (!cmd.tcpm_keylen)
-		return tcp_md5_do_del(sk, (union tcp_md5_addr *)&sin->sin_addr.s_addr,
-				      AF_INET, prefixlen);
+		return tcp_md5_do_del(sk, tcpmd5addr, family, prefixlen);
 
 	if (cmd.tcpm_keylen > TCP_MD5SIG_MAXKEYLEN)
 		return -EINVAL;
 
-	return tcp_md5_do_add(sk, (union tcp_md5_addr *)&sin->sin_addr.s_addr,
-			      AF_INET, prefixlen, cmd.tcpm_key, cmd.tcpm_keylen,
-			      GFP_KERNEL);
-}
-
-#if IS_ENABLED(CONFIG_IPV6)
-static int tcp_v6_parse_md5_keys(struct sock *sk, int optname,
-				 char __user *optval, int optlen)
-{
-	struct tcp_md5sig cmd;
-	struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&cmd.tcpm_addr;
-	u8 prefixlen;
-
-	if (optlen < sizeof(cmd))
-		return -EINVAL;
-
-	if (copy_from_user(&cmd, optval, sizeof(cmd)))
-		return -EFAULT;
-
-	if (sin6->sin6_family != AF_INET6)
-		return -EINVAL;
-
-	if (optname == TCP_MD5SIG_EXT &&
-	    cmd.tcpm_flags & TCP_MD5SIG_FLAG_PREFIX) {
-		prefixlen = cmd.tcpm_prefixlen;
-		if (prefixlen > 128 || (ipv6_addr_v4mapped(&sin6->sin6_addr) &&
-					prefixlen > 32))
-			return -EINVAL;
-	} else {
-		prefixlen = ipv6_addr_v4mapped(&sin6->sin6_addr) ? 32 : 128;
-	}
-
-	if (!cmd.tcpm_keylen) {
-		if (ipv6_addr_v4mapped(&sin6->sin6_addr))
-			return tcp_md5_do_del(sk, (union tcp_md5_addr *)&sin6->sin6_addr.s6_addr32[3],
-					      AF_INET, prefixlen);
-		return tcp_md5_do_del(sk, (union tcp_md5_addr *)&sin6->sin6_addr,
-				      AF_INET6, prefixlen);
-	}
-
-	if (cmd.tcpm_keylen > TCP_MD5SIG_MAXKEYLEN)
-		return -EINVAL;
-
-	if (ipv6_addr_v4mapped(&sin6->sin6_addr))
-		return tcp_md5_do_add(sk, (union tcp_md5_addr *)&sin6->sin6_addr.s6_addr32[3],
-				      AF_INET, prefixlen, cmd.tcpm_key,
-				      cmd.tcpm_keylen, GFP_KERNEL);
-
-	return tcp_md5_do_add(sk, (union tcp_md5_addr *)&sin6->sin6_addr,
-			      AF_INET6, prefixlen, cmd.tcpm_key,
+	return tcp_md5_do_add(sk, tcpmd5addr, family, prefixlen, cmd.tcpm_key,
 			      cmd.tcpm_keylen, GFP_KERNEL);
 }
-#endif
 
 static int tcp_v4_md5_hash_headers(struct tcp_md5sig_pool *hp,
 				   __be32 daddr, __be32 saddr,
@@ -670,6 +643,102 @@ static int tcp_md5_hash_skb_data(struct tcp_md5sig_pool *hp,
 	return 0;
 }
 
+static int tcp_v4_md5_hash_skb(char *md5_hash, const struct tcp_md5sig_key *key,
+			       const struct sock *sk, const struct sk_buff *skb)
+{
+	struct tcp_md5sig_pool *hp;
+	struct ahash_request *req;
+	const struct tcphdr *th = tcp_hdr(skb);
+	__be32 saddr, daddr;
+
+	if (sk) { /* valid for establish/request sockets */
+		saddr = sk->sk_rcv_saddr;
+		daddr = sk->sk_daddr;
+	} else {
+		const struct iphdr *iph = ip_hdr(skb);
+
+		saddr = iph->saddr;
+		daddr = iph->daddr;
+	}
+
+	hp = tcp_get_md5sig_pool();
+	if (!hp)
+		goto clear_hash_noput;
+	req = hp->md5_req;
+
+	if (crypto_ahash_init(req))
+		goto clear_hash;
+
+	if (tcp_v4_md5_hash_headers(hp, daddr, saddr, th, skb->len))
+		goto clear_hash;
+	if (tcp_md5_hash_skb_data(hp, skb, th->doff << 2))
+		goto clear_hash;
+	if (tcp_md5_hash_key(hp, key))
+		goto clear_hash;
+	ahash_request_set_crypt(req, NULL, md5_hash, 0);
+	if (crypto_ahash_final(req))
+		goto clear_hash;
+
+	tcp_put_md5sig_pool();
+	return 0;
+
+clear_hash:
+	tcp_put_md5sig_pool();
+clear_hash_noput:
+	memset(md5_hash, 0, 16);
+	return 1;
+}
+
+#if IS_ENABLED(CONFIG_IPV6)
+static int tcp_v6_md5_hash_skb(char *md5_hash,
+			       const struct tcp_md5sig_key *key,
+			       const struct sock *sk,
+			       const struct sk_buff *skb)
+{
+	const struct in6_addr *saddr, *daddr;
+	struct tcp_md5sig_pool *hp;
+	struct ahash_request *req;
+	const struct tcphdr *th = tcp_hdr(skb);
+
+	if (sk) { /* valid for establish/request sockets */
+		saddr = &sk->sk_v6_rcv_saddr;
+		daddr = &sk->sk_v6_daddr;
+	} else {
+		const struct ipv6hdr *ip6h = ipv6_hdr(skb);
+
+		saddr = &ip6h->saddr;
+		daddr = &ip6h->daddr;
+	}
+
+	hp = tcp_get_md5sig_pool();
+	if (!hp)
+		goto clear_hash_noput;
+	req = hp->md5_req;
+
+	if (crypto_ahash_init(req))
+		goto clear_hash;
+
+	if (tcp_v6_md5_hash_headers(hp, daddr, saddr, th, skb->len))
+		goto clear_hash;
+	if (tcp_md5_hash_skb_data(hp, skb, th->doff << 2))
+		goto clear_hash;
+	if (tcp_md5_hash_key(hp, key))
+		goto clear_hash;
+	ahash_request_set_crypt(req, NULL, md5_hash, 0);
+	if (crypto_ahash_final(req))
+		goto clear_hash;
+
+	tcp_put_md5sig_pool();
+	return 0;
+
+clear_hash:
+	tcp_put_md5sig_pool();
+clear_hash_noput:
+	memset(md5_hash, 0, 16);
+	return 1;
+}
+#endif
+
 static int tcp_v4_md5_send_response_prepare(struct sk_buff *skb, u8 flags,
 					    unsigned int remaining,
 					    struct tcp_out_options *opts,
@@ -784,114 +853,14 @@ static __be32 *tcp_md5_send_response_write(__be32 *ptr, struct sk_buff *orig,
 	return tcp_v4_md5_send_response_write(ptr, orig, th, opts, sk);
 }
 
-struct tcp_md5sig_key *tcp_v4_md5_lookup(const struct sock *sk,
-					 const struct sock *addr_sk)
+static struct tcp_md5sig_key *tcp_v4_md5_lookup(const struct sock *sk,
+						const struct sock *addr_sk)
 {
 	const union tcp_md5_addr *addr;
 
 	addr = (const union tcp_md5_addr *)&addr_sk->sk_daddr;
 	return tcp_md5_do_lookup(sk, addr, AF_INET);
 }
-EXPORT_SYMBOL(tcp_v4_md5_lookup);
-
-int tcp_v4_md5_hash_skb(char *md5_hash, const struct tcp_md5sig_key *key,
-			const struct sock *sk,
-			const struct sk_buff *skb)
-{
-	struct tcp_md5sig_pool *hp;
-	struct ahash_request *req;
-	const struct tcphdr *th = tcp_hdr(skb);
-	__be32 saddr, daddr;
-
-	if (sk) { /* valid for establish/request sockets */
-		saddr = sk->sk_rcv_saddr;
-		daddr = sk->sk_daddr;
-	} else {
-		const struct iphdr *iph = ip_hdr(skb);
-
-		saddr = iph->saddr;
-		daddr = iph->daddr;
-	}
-
-	hp = tcp_get_md5sig_pool();
-	if (!hp)
-		goto clear_hash_noput;
-	req = hp->md5_req;
-
-	if (crypto_ahash_init(req))
-		goto clear_hash;
-
-	if (tcp_v4_md5_hash_headers(hp, daddr, saddr, th, skb->len))
-		goto clear_hash;
-	if (tcp_md5_hash_skb_data(hp, skb, th->doff << 2))
-		goto clear_hash;
-	if (tcp_md5_hash_key(hp, key))
-		goto clear_hash;
-	ahash_request_set_crypt(req, NULL, md5_hash, 0);
-	if (crypto_ahash_final(req))
-		goto clear_hash;
-
-	tcp_put_md5sig_pool();
-	return 0;
-
-clear_hash:
-	tcp_put_md5sig_pool();
-clear_hash_noput:
-	memset(md5_hash, 0, 16);
-	return 1;
-}
-EXPORT_SYMBOL(tcp_v4_md5_hash_skb);
-
-#if IS_ENABLED(CONFIG_IPV6)
-int tcp_v6_md5_hash_skb(char *md5_hash,
-			const struct tcp_md5sig_key *key,
-			const struct sock *sk,
-			const struct sk_buff *skb)
-{
-	const struct in6_addr *saddr, *daddr;
-	struct tcp_md5sig_pool *hp;
-	struct ahash_request *req;
-	const struct tcphdr *th = tcp_hdr(skb);
-
-	if (sk) { /* valid for establish/request sockets */
-		saddr = &sk->sk_v6_rcv_saddr;
-		daddr = &sk->sk_v6_daddr;
-	} else {
-		const struct ipv6hdr *ip6h = ipv6_hdr(skb);
-
-		saddr = &ip6h->saddr;
-		daddr = &ip6h->daddr;
-	}
-
-	hp = tcp_get_md5sig_pool();
-	if (!hp)
-		goto clear_hash_noput;
-	req = hp->md5_req;
-
-	if (crypto_ahash_init(req))
-		goto clear_hash;
-
-	if (tcp_v6_md5_hash_headers(hp, daddr, saddr, th, skb->len))
-		goto clear_hash;
-	if (tcp_md5_hash_skb_data(hp, skb, th->doff << 2))
-		goto clear_hash;
-	if (tcp_md5_hash_key(hp, key))
-		goto clear_hash;
-	ahash_request_set_crypt(req, NULL, md5_hash, 0);
-	if (crypto_ahash_final(req))
-		goto clear_hash;
-
-	tcp_put_md5sig_pool();
-	return 0;
-
-clear_hash:
-	tcp_put_md5sig_pool();
-clear_hash_noput:
-	memset(md5_hash, 0, 16);
-	return 1;
-}
-EXPORT_SYMBOL_GPL(tcp_v6_md5_hash_skb);
-#endif
 
 /* Called with rcu_read_lock() */
 bool tcp_v4_inbound_md5_hash(const struct sock *sk,
@@ -994,8 +963,8 @@ bool tcp_v6_inbound_md5_hash(const struct sock *sk,
 }
 EXPORT_SYMBOL_GPL(tcp_v6_inbound_md5_hash);
 
-struct tcp_md5sig_key *tcp_v6_md5_lookup(const struct sock *sk,
-					 const struct sock *addr_sk)
+static struct tcp_md5sig_key *tcp_v6_md5_lookup(const struct sock *sk,
+						const struct sock *addr_sk)
 {
 	return tcp_v6_md5_do_lookup(sk, &addr_sk->sk_v6_daddr);
 }
@@ -1103,10 +1072,17 @@ static int tcp_md5_extopt_add_header_len(const struct sock *orig,
 					 const struct sock *sk,
 					 struct tcp_extopt_store *store)
 {
-	struct tcp_sock *tp = tcp_sk(sk);
-
-	if (tp->af_specific->md5_lookup(orig, sk))
+#if IS_ENABLED(CONFIG_IPV6)
+	if (sk->sk_family == AF_INET6 &&
+	    !ipv6_addr_v4mapped(&sk->sk_v6_daddr)) {
+		if (tcp_v6_md5_lookup(orig, sk))
+			return TCPOLEN_MD5SIG_ALIGNED;
+	} else
+#endif
+{
+	if (tcp_v4_md5_lookup(orig, sk))
 		return TCPOLEN_MD5SIG_ALIGNED;
+}
 
 	return 0;
 }
@@ -1120,19 +1096,29 @@ static unsigned int tcp_md5_extopt_prepare(struct sk_buff *skb, u8 flags,
 	int ret = 0;
 
 	if (sk_fullsock(sk)) {
-		struct tcp_sock *tp = tcp_sk(sk);
-
-		opts->md5 = tp->af_specific->md5_lookup(sk, sk);
+#if IS_ENABLED(CONFIG_IPV6)
+		if (sk->sk_family == AF_INET6 && !ipv6_addr_v4mapped(&sk->sk_v6_daddr))
+			opts->md5 = tcp_v6_md5_lookup(sk, sk);
+		else
+#endif
+			opts->md5 = tcp_v4_md5_lookup(sk, sk);
 	} else {
 		struct request_sock *req = inet_reqsk(sk);
 		struct sock *listener = req->rsk_listener;
+		struct inet_request_sock *ireq = inet_rsk(req);
 
 		/* Coming from tcp_make_synack, unlock is in
 		 * tcp_md5_extopt_write
 		 */
 		rcu_read_lock();
 
-		opts->md5 = tcp_rsk(req)->af_specific->req_md5_lookup(listener, sk);
+#if IS_ENABLED(CONFIG_IPV6)
+		if (ireq->ireq_family == AF_INET6 &&
+		    !ipv6_addr_v4mapped(&ireq->ir_v6_rmt_addr))
+			opts->md5 = tcp_v6_md5_lookup(listener, sk);
+		else
+#endif
+			opts->md5 = tcp_v4_md5_lookup(listener, sk);
 
 		if (!opts->md5)
 			rcu_read_unlock();
@@ -1352,25 +1338,3 @@ static void tcp_md5_extopt_destroy(struct tcp_extopt_store *store)
 		kfree_rcu(md5_opt, rcu);
 	}
 }
-
-const struct tcp_sock_af_ops tcp_sock_ipv4_specific = {
-	.md5_lookup	= tcp_v4_md5_lookup,
-	.calc_md5_hash	= tcp_v4_md5_hash_skb,
-	.md5_parse	= tcp_v4_parse_md5_keys,
-};
-
-#if IS_ENABLED(CONFIG_IPV6)
-const struct tcp_sock_af_ops tcp_sock_ipv6_specific = {
-	.md5_lookup	=	tcp_v6_md5_lookup,
-	.calc_md5_hash	=	tcp_v6_md5_hash_skb,
-	.md5_parse	=	tcp_v6_parse_md5_keys,
-};
-EXPORT_SYMBOL_GPL(tcp_sock_ipv6_specific);
-
-const struct tcp_sock_af_ops tcp_sock_ipv6_mapped_specific = {
-	.md5_lookup	=	tcp_v4_md5_lookup,
-	.calc_md5_hash	=	tcp_v4_md5_hash_skb,
-	.md5_parse	=	tcp_v6_parse_md5_keys,
-};
-EXPORT_SYMBOL_GPL(tcp_sock_ipv6_mapped_specific);
-#endif
