@@ -44,6 +44,149 @@
 #include "smc_rx.h"
 #include "smc_close.h"
 
+static unsigned int tcp_smc_opt_prepare(struct sk_buff *skb, u8 flags,
+					unsigned int remaining,
+					struct tcp_out_options *opts,
+					const struct sock *sk,
+					struct tcp_extopt_store *store);
+static __be32 *tcp_smc_opt_write(__be32 *ptr, struct sk_buff *skb,
+				 struct tcp_out_options *opts,
+				 struct sock *sk,
+				 struct tcp_extopt_store *store);
+static void tcp_smc_opt_parse(int opsize, const unsigned char *opptr,
+			      const struct sk_buff *skb,
+			      struct tcp_options_received *opt_rx,
+			      struct sock *sk,
+			      struct tcp_extopt_store *store);
+static void tcp_smc_opt_post_process(struct sock *sk,
+				     struct tcp_options_received *opt,
+				     struct tcp_extopt_store *store);
+static struct tcp_extopt_store *tcp_smc_opt_copy(struct sock *listener,
+						 struct request_sock *req,
+						 struct tcp_options_received *opt,
+						 struct tcp_extopt_store *store);
+static void tcp_smc_opt_destroy(struct tcp_extopt_store *store);
+
+struct tcp_smc_opt {
+	struct tcp_extopt_store	store;
+	int			smc_ok:1; /* SMC supported on this connection */
+	struct rcu_head		rcu;
+};
+
+static const struct tcp_extopt_ops tcp_smc_extra_ops = {
+	.option_kind	= TCPOPT_SMC_MAGIC,
+	.parse		= tcp_smc_opt_parse,
+	.post_process	= tcp_smc_opt_post_process,
+	.prepare	= tcp_smc_opt_prepare,
+	.write		= tcp_smc_opt_write,
+	.copy		= tcp_smc_opt_copy,
+	.destroy	= tcp_smc_opt_destroy,
+	.owner		= THIS_MODULE,
+};
+
+static struct tcp_smc_opt *tcp_extopt_to_smc(struct tcp_extopt_store *store)
+{
+	return container_of(store, struct tcp_smc_opt, store);
+}
+
+static struct tcp_smc_opt *tcp_smc_opt_find(struct sock *sk)
+{
+	struct tcp_extopt_store *ext_opt;
+
+	ext_opt = tcp_extopt_find_kind(TCPOPT_SMC_MAGIC, sk);
+
+	return tcp_extopt_to_smc(ext_opt);
+}
+
+static unsigned int tcp_smc_opt_prepare(struct sk_buff *skb, u8 flags,
+					unsigned int remaining,
+					struct tcp_out_options *opts,
+					const struct sock *sk,
+					struct tcp_extopt_store *store)
+{
+	if (!(flags & TCPHDR_SYN))
+		return 0;
+
+	if (remaining >= TCPOLEN_EXP_SMC_BASE_ALIGNED) {
+		opts->options |= OPTION_SMC;
+		return TCPOLEN_EXP_SMC_BASE_ALIGNED;
+	}
+
+	return 0;
+}
+
+static __be32 *tcp_smc_opt_write(__be32 *ptr, struct sk_buff *skb,
+				 struct tcp_out_options *opts,
+				 struct sock *sk,
+				 struct tcp_extopt_store *store)
+{
+	if (unlikely(OPTION_SMC & opts->options)) {
+		*ptr++ = htonl((TCPOPT_NOP  << 24) |
+			       (TCPOPT_NOP  << 16) |
+			       (TCPOPT_EXP <<  8) |
+			       (TCPOLEN_EXP_SMC_BASE));
+		*ptr++ = htonl(TCPOPT_SMC_MAGIC);
+	}
+
+	return ptr;
+}
+
+static void tcp_smc_opt_parse(int opsize, const unsigned char *opptr,
+			      const struct sk_buff *skb,
+			      struct tcp_options_received *opt_rx,
+			      struct sock *sk,
+			      struct tcp_extopt_store *store)
+{
+	struct tcphdr *th = tcp_hdr(skb);
+
+	if (th->syn && !(opsize & 1) && opsize >= TCPOLEN_EXP_SMC_BASE)
+		opt_rx->smc_ok = 1;
+}
+
+static void tcp_smc_opt_post_process(struct sock *sk,
+				     struct tcp_options_received *opt,
+				     struct tcp_extopt_store *store)
+{
+	struct tcp_smc_opt *smc_opt = tcp_extopt_to_smc(store);
+
+	if (sk->sk_state != TCP_SYN_SENT)
+		return;
+
+	if (opt->smc_ok)
+		smc_opt->smc_ok = 1;
+	else
+		smc_opt->smc_ok = 0;
+}
+
+static struct tcp_extopt_store *tcp_smc_opt_copy(struct sock *listener,
+						 struct request_sock *req,
+						 struct tcp_options_received *opt,
+						 struct tcp_extopt_store *store)
+{
+	struct tcp_smc_opt *smc_opt;
+
+	/* First, check if the peer sent us the smc-opt */
+	if (!opt->smc_ok)
+		return NULL;
+
+	smc_opt = kzalloc(sizeof(*smc_opt), GFP_ATOMIC);
+	if (!smc_opt)
+		return NULL;
+
+	smc_opt->store.ops = &tcp_smc_extra_ops;
+
+	smc_opt->smc_ok = 1;
+
+	return (struct tcp_extopt_store *)smc_opt;
+}
+
+static void tcp_smc_opt_destroy(struct tcp_extopt_store *store)
+{
+	struct tcp_smc_opt *smc_opt = tcp_extopt_to_smc(store);
+
+	kfree_rcu(smc_opt, rcu);
+}
+
 static DEFINE_MUTEX(smc_create_lgr_pending);	/* serialize link group
 						 * creation
 						 */
@@ -389,6 +532,7 @@ static int smc_connect_rdma(struct smc_sock *smc)
 	struct smc_clc_msg_accept_confirm aclc;
 	int local_contact = SMC_FIRST_CONTACT;
 	struct smc_ib_device *smcibdev;
+	struct tcp_smc_opt *smc_opt;
 	struct smc_link *link;
 	u8 srv_first_contact;
 	int reason_code = 0;
@@ -397,7 +541,8 @@ static int smc_connect_rdma(struct smc_sock *smc)
 
 	sock_hold(&smc->sk); /* sock put in passive closing */
 
-	if (!tcp_sk(smc->clcsock->sk)->syn_smc) {
+	smc_opt = tcp_smc_opt_find(smc->clcsock->sk);
+	if (!smc_opt || !smc_opt->smc_ok) {
 		/* peer has not signalled SMC-capability */
 		smc->use_fallback = true;
 		goto out_connected;
@@ -548,6 +693,7 @@ out_err:
 static int smc_connect(struct socket *sock, struct sockaddr *addr,
 		       int alen, int flags)
 {
+	struct tcp_smc_opt *smc_opt;
 	struct sock *sk = sock->sk;
 	struct smc_sock *smc;
 	int rc = -EINVAL;
@@ -561,9 +707,17 @@ static int smc_connect(struct socket *sock, struct sockaddr *addr,
 		goto out_err;
 	smc->addr = addr;	/* needed for nonblocking connect */
 
+	smc_opt = kzalloc(sizeof(*smc_opt), GFP_KERNEL);
+	if (!smc_opt) {
+		rc = -ENOMEM;
+		goto out_err;
+	}
+	smc_opt->store.ops = &tcp_smc_extra_ops;
+
 	lock_sock(sk);
 	switch (sk->sk_state) {
 	default:
+		rc = -EINVAL;
 		goto out;
 	case SMC_ACTIVE:
 		rc = -EISCONN;
@@ -573,8 +727,15 @@ static int smc_connect(struct socket *sock, struct sockaddr *addr,
 		break;
 	}
 
+	/* We are the only owner of smc->clcsock->sk, so we can be lockless */
+	rc = tcp_register_extopt(&smc_opt->store, smc->clcsock->sk);
+	if (rc) {
+		release_sock(smc->clcsock->sk);
+		kfree(smc_opt);
+		goto out_err;
+	}
+
 	smc_copy_sock_settings_to_clc(smc);
-	tcp_sk(smc->clcsock->sk)->syn_smc = 1;
 	rc = kernel_connect(smc->clcsock, addr, alen, flags);
 	if (rc)
 		goto out;
@@ -768,6 +929,7 @@ static void smc_listen_work(struct work_struct *work)
 	struct smc_clc_msg_proposal *pclc;
 	struct smc_ib_device *smcibdev;
 	struct sockaddr_in peeraddr;
+	struct tcp_smc_opt *smc_opt;
 	u8 buf[SMC_CLC_MAX_LEN];
 	struct smc_link *link;
 	int reason_code = 0;
@@ -777,7 +939,8 @@ static void smc_listen_work(struct work_struct *work)
 	u8 ibport;
 
 	/* check if peer is smc capable */
-	if (!tcp_sk(newclcsock->sk)->syn_smc) {
+	smc_opt = tcp_smc_opt_find(newclcsock->sk);
+	if (!smc_opt || !smc_opt->smc_ok) {
 		new_smc->use_fallback = true;
 		goto out_connected;
 	}
@@ -987,9 +1150,17 @@ out:
 
 static int smc_listen(struct socket *sock, int backlog)
 {
+	struct tcp_smc_opt *smc_opt;
 	struct sock *sk = sock->sk;
 	struct smc_sock *smc;
 	int rc;
+
+	smc_opt = kzalloc(sizeof(*smc_opt), GFP_KERNEL);
+	if (!smc_opt) {
+		rc = -ENOMEM;
+		goto out_err;
+	}
+	smc_opt->store.ops = &tcp_smc_extra_ops;
 
 	smc = smc_sk(sk);
 	lock_sock(sk);
@@ -1003,11 +1174,19 @@ static int smc_listen(struct socket *sock, int backlog)
 		sk->sk_max_ack_backlog = backlog;
 		goto out;
 	}
+
+	/* We are the only owner of smc->clcsock->sk, so we can be lockless */
+	rc = tcp_register_extopt(&smc_opt->store, smc->clcsock->sk);
+	if (rc) {
+		release_sock(smc->clcsock->sk);
+		kfree(smc_opt);
+		goto out_err;
+	}
+
 	/* some socket options are handled in core, so we could not apply
 	 * them to the clc socket -- copy smc socket options to clc socket
 	 */
 	smc_copy_sock_settings_to_clc(smc);
-	tcp_sk(smc->clcsock->sk)->syn_smc = 1;
 
 	rc = kernel_listen(smc->clcsock, backlog);
 	if (rc)
@@ -1022,6 +1201,7 @@ static int smc_listen(struct socket *sock, int backlog)
 
 out:
 	release_sock(sk);
+out_err:
 	return rc;
 }
 
@@ -1460,7 +1640,6 @@ static int __init smc_init(void)
 		goto out_sock;
 	}
 
-	static_branch_enable(&tcp_have_smc);
 	return 0;
 
 out_sock:
@@ -1485,7 +1664,6 @@ static void __exit smc_exit(void)
 		list_del_init(&lgr->list);
 		smc_lgr_free(lgr); /* free link group */
 	}
-	static_branch_disable(&tcp_have_smc);
 	smc_ib_unregister_client();
 	sock_unregister(PF_SMC);
 	proto_unregister(&smc_proto);

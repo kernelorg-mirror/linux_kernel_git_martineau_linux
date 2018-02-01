@@ -398,21 +398,6 @@ static inline bool tcp_urg_mode(const struct tcp_sock *tp)
 	return tp->snd_una != tp->snd_up;
 }
 
-static void smc_options_write(__be32 *ptr, u16 *options)
-{
-#if IS_ENABLED(CONFIG_SMC)
-	if (static_branch_unlikely(&tcp_have_smc)) {
-		if (unlikely(OPTION_SMC & *options)) {
-			*ptr++ = htonl((TCPOPT_NOP  << 24) |
-				       (TCPOPT_NOP  << 16) |
-				       (TCPOPT_EXP <<  8) |
-				       (TCPOLEN_EXP_SMC_BASE));
-			*ptr++ = htonl(TCPOPT_SMC_MAGIC);
-		}
-	}
-#endif
-}
-
 /* Write previously computed TCP options to the packet.
  *
  * Beware: Something in the Internet is very sensitive to the ordering of
@@ -527,43 +512,8 @@ static void tcp_options_write(__be32 *ptr, struct sk_buff *skb, struct sock *sk,
 		ptr += (len + 3) >> 2;
 	}
 
-	smc_options_write(ptr, &options);
-
 	if (unlikely(!hlist_empty(extopt_list)))
 		tcp_extopt_write(ptr, skb, opts, sk);
-}
-
-static void smc_set_option(const struct tcp_sock *tp,
-			   struct tcp_out_options *opts,
-			   unsigned int *remaining)
-{
-#if IS_ENABLED(CONFIG_SMC)
-	if (static_branch_unlikely(&tcp_have_smc)) {
-		if (tp->syn_smc) {
-			if (*remaining >= TCPOLEN_EXP_SMC_BASE_ALIGNED) {
-				opts->options |= OPTION_SMC;
-				*remaining -= TCPOLEN_EXP_SMC_BASE_ALIGNED;
-			}
-		}
-	}
-#endif
-}
-
-static void smc_set_option_cond(const struct tcp_sock *tp,
-				const struct inet_request_sock *ireq,
-				struct tcp_out_options *opts,
-				unsigned int *remaining)
-{
-#if IS_ENABLED(CONFIG_SMC)
-	if (static_branch_unlikely(&tcp_have_smc)) {
-		if (tp->syn_smc && ireq->smc_ok) {
-			if (*remaining >= TCPOLEN_EXP_SMC_BASE_ALIGNED) {
-				opts->options |= OPTION_SMC;
-				*remaining -= TCPOLEN_EXP_SMC_BASE_ALIGNED;
-			}
-		}
-	}
-#endif
 }
 
 /* Compute TCP options for SYN packets. This is not the final
@@ -631,8 +581,6 @@ static unsigned int tcp_syn_options(struct sock *sk, struct sk_buff *skb,
 		}
 	}
 
-	smc_set_option(tp, opts, &remaining);
-
 	if (unlikely(!hlist_empty(&tp->tcp_option_list)))
 		remaining -= tcp_extopt_prepare(skb, TCPHDR_SYN, remaining,
 						opts, tcp_to_sk(tp));
@@ -697,8 +645,6 @@ static unsigned int tcp_synack_options(const struct sock *sk,
 			remaining -= need;
 		}
 	}
-
-	smc_set_option_cond(tcp_sk(sk), ireq, opts, &remaining);
 
 	if (unlikely(!hlist_empty(&tcp_rsk(req)->tcp_option_list)))
 		remaining -= tcp_extopt_prepare(skb, TCPHDR_SYN | TCPHDR_ACK,

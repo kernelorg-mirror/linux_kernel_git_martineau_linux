@@ -2093,10 +2093,6 @@ static inline bool tcp_bpf_ca_needs_ecn(struct sock *sk)
 	return (tcp_call_bpf(sk, BPF_SOCK_OPS_NEEDS_ECN, 0, NULL) == 1);
 }
 
-#if IS_ENABLED(CONFIG_SMC)
-extern struct static_key_false tcp_have_smc;
-#endif
-
 struct tcp_extopt_store;
 
 struct tcp_extopt_ops {
