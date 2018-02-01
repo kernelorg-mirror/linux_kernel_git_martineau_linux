@@ -22,6 +22,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/sysctl.h>
+#include <linux/tcp_md5.h>
 #include <linux/workqueue.h>
 #include <linux/static_key.h>
 #include <net/tcp.h>
@@ -295,21 +296,7 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 			INIT_HLIST_HEAD(&tp->tcp_option_list);
 		}
 #ifdef CONFIG_TCP_MD5SIG
-		/*
-		 * The timewait bucket does not have the key DB from the
-		 * sock structure. We just make a quick copy of the
-		 * md5 key being used (if indeed we are using one)
-		 * so the timewait ack generating code has the key.
-		 */
-		do {
-			struct tcp_md5sig_key *key;
-			tcptw->tw_md5_key = NULL;
-			key = tp->af_specific->md5_lookup(sk, sk);
-			if (key) {
-				tcptw->tw_md5_key = kmemdup(key, sizeof(*key), GFP_ATOMIC);
-				BUG_ON(tcptw->tw_md5_key && !tcp_alloc_md5sig_pool());
-			}
-		} while (0);
+		tcp_md5_time_wait(sk, tw);
 #endif
 
 		/* Get the TIME_WAIT timeout firing. */
@@ -348,8 +335,7 @@ void tcp_twsk_destructor(struct sock *sk)
 	struct tcp_timewait_sock *twsk = tcp_twsk(sk);
 
 #ifdef CONFIG_TCP_MD5SIG
-	if (twsk->tw_md5_key)
-		kfree_rcu(twsk->tw_md5_key, rcu);
+	tcp_md5_twsk_destructor(twsk);
 #endif
 
 	if (unlikely(!hlist_empty(&twsk->tcp_option_list)))
@@ -538,8 +524,7 @@ struct sock *tcp_create_openreq_child(const struct sock *sk,
 		newtp->tsoffset = treq->ts_off;
 #ifdef CONFIG_TCP_MD5SIG
 		newtp->md5sig_info = NULL;	/*XXX*/
-		if (newtp->af_specific->md5_lookup(sk, newsk))
-			newtp->tcp_header_len += TCPOLEN_MD5SIG_ALIGNED;
+		tcp_md5_add_header_len(sk, newsk);
 #endif
 		if (unlikely(!hlist_empty(&treq->tcp_option_list)))
 			newtp->tcp_header_len += tcp_extopt_add_header(req_to_sk(req), newsk);

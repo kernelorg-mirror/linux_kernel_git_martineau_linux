@@ -43,6 +43,7 @@
 #include <linux/ipv6.h>
 #include <linux/icmpv6.h>
 #include <linux/random.h>
+#include <linux/tcp_md5.h>
 
 #include <net/tcp.h>
 #include <net/ndisc.h>
@@ -79,10 +80,6 @@ static int	tcp_v6_do_rcv(struct sock *sk, struct sk_buff *skb);
 
 static const struct inet_connection_sock_af_ops ipv6_mapped;
 static const struct inet_connection_sock_af_ops ipv6_specific;
-#ifdef CONFIG_TCP_MD5SIG
-static const struct tcp_sock_af_ops tcp_sock_ipv6_specific;
-static const struct tcp_sock_af_ops tcp_sock_ipv6_mapped_specific;
-#endif
 
 static void inet6_sk_rx_dst_set(struct sock *sk, const struct sk_buff *skb)
 {
@@ -500,218 +497,6 @@ static void tcp_v6_reqsk_destructor(struct request_sock *req)
 	kfree_skb(inet_rsk(req)->pktopts);
 }
 
-#ifdef CONFIG_TCP_MD5SIG
-static struct tcp_md5sig_key *tcp_v6_md5_do_lookup(const struct sock *sk,
-						   const struct in6_addr *addr)
-{
-	return tcp_md5_do_lookup(sk, (union tcp_md5_addr *)addr, AF_INET6);
-}
-
-static struct tcp_md5sig_key *tcp_v6_md5_lookup(const struct sock *sk,
-						const struct sock *addr_sk)
-{
-	return tcp_v6_md5_do_lookup(sk, &addr_sk->sk_v6_daddr);
-}
-
-static int tcp_v6_parse_md5_keys(struct sock *sk, int optname,
-				 char __user *optval, int optlen)
-{
-	struct tcp_md5sig cmd;
-	struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&cmd.tcpm_addr;
-	u8 prefixlen;
-
-	if (optlen < sizeof(cmd))
-		return -EINVAL;
-
-	if (copy_from_user(&cmd, optval, sizeof(cmd)))
-		return -EFAULT;
-
-	if (sin6->sin6_family != AF_INET6)
-		return -EINVAL;
-
-	if (optname == TCP_MD5SIG_EXT &&
-	    cmd.tcpm_flags & TCP_MD5SIG_FLAG_PREFIX) {
-		prefixlen = cmd.tcpm_prefixlen;
-		if (prefixlen > 128 || (ipv6_addr_v4mapped(&sin6->sin6_addr) &&
-					prefixlen > 32))
-			return -EINVAL;
-	} else {
-		prefixlen = ipv6_addr_v4mapped(&sin6->sin6_addr) ? 32 : 128;
-	}
-
-	if (!cmd.tcpm_keylen) {
-		if (ipv6_addr_v4mapped(&sin6->sin6_addr))
-			return tcp_md5_do_del(sk, (union tcp_md5_addr *)&sin6->sin6_addr.s6_addr32[3],
-					      AF_INET, prefixlen);
-		return tcp_md5_do_del(sk, (union tcp_md5_addr *)&sin6->sin6_addr,
-				      AF_INET6, prefixlen);
-	}
-
-	if (cmd.tcpm_keylen > TCP_MD5SIG_MAXKEYLEN)
-		return -EINVAL;
-
-	if (ipv6_addr_v4mapped(&sin6->sin6_addr))
-		return tcp_md5_do_add(sk, (union tcp_md5_addr *)&sin6->sin6_addr.s6_addr32[3],
-				      AF_INET, prefixlen, cmd.tcpm_key,
-				      cmd.tcpm_keylen, GFP_KERNEL);
-
-	return tcp_md5_do_add(sk, (union tcp_md5_addr *)&sin6->sin6_addr,
-			      AF_INET6, prefixlen, cmd.tcpm_key,
-			      cmd.tcpm_keylen, GFP_KERNEL);
-}
-
-static int tcp_v6_md5_hash_headers(struct tcp_md5sig_pool *hp,
-				   const struct in6_addr *daddr,
-				   const struct in6_addr *saddr,
-				   const struct tcphdr *th, int nbytes)
-{
-	struct tcp6_pseudohdr *bp;
-	struct scatterlist sg;
-	struct tcphdr *_th;
-
-	bp = hp->scratch;
-	/* 1. TCP pseudo-header (RFC2460) */
-	bp->saddr = *saddr;
-	bp->daddr = *daddr;
-	bp->protocol = cpu_to_be32(IPPROTO_TCP);
-	bp->len = cpu_to_be32(nbytes);
-
-	_th = (struct tcphdr *)(bp + 1);
-	memcpy(_th, th, sizeof(*th));
-	_th->check = 0;
-
-	sg_init_one(&sg, bp, sizeof(*bp) + sizeof(*th));
-	ahash_request_set_crypt(hp->md5_req, &sg, NULL,
-				sizeof(*bp) + sizeof(*th));
-	return crypto_ahash_update(hp->md5_req);
-}
-
-static int tcp_v6_md5_hash_hdr(char *md5_hash, const struct tcp_md5sig_key *key,
-			       const struct in6_addr *daddr, struct in6_addr *saddr,
-			       const struct tcphdr *th)
-{
-	struct tcp_md5sig_pool *hp;
-	struct ahash_request *req;
-
-	hp = tcp_get_md5sig_pool();
-	if (!hp)
-		goto clear_hash_noput;
-	req = hp->md5_req;
-
-	if (crypto_ahash_init(req))
-		goto clear_hash;
-	if (tcp_v6_md5_hash_headers(hp, daddr, saddr, th, th->doff << 2))
-		goto clear_hash;
-	if (tcp_md5_hash_key(hp, key))
-		goto clear_hash;
-	ahash_request_set_crypt(req, NULL, md5_hash, 0);
-	if (crypto_ahash_final(req))
-		goto clear_hash;
-
-	tcp_put_md5sig_pool();
-	return 0;
-
-clear_hash:
-	tcp_put_md5sig_pool();
-clear_hash_noput:
-	memset(md5_hash, 0, 16);
-	return 1;
-}
-
-static int tcp_v6_md5_hash_skb(char *md5_hash,
-			       const struct tcp_md5sig_key *key,
-			       const struct sock *sk,
-			       const struct sk_buff *skb)
-{
-	const struct in6_addr *saddr, *daddr;
-	struct tcp_md5sig_pool *hp;
-	struct ahash_request *req;
-	const struct tcphdr *th = tcp_hdr(skb);
-
-	if (sk) { /* valid for establish/request sockets */
-		saddr = &sk->sk_v6_rcv_saddr;
-		daddr = &sk->sk_v6_daddr;
-	} else {
-		const struct ipv6hdr *ip6h = ipv6_hdr(skb);
-		saddr = &ip6h->saddr;
-		daddr = &ip6h->daddr;
-	}
-
-	hp = tcp_get_md5sig_pool();
-	if (!hp)
-		goto clear_hash_noput;
-	req = hp->md5_req;
-
-	if (crypto_ahash_init(req))
-		goto clear_hash;
-
-	if (tcp_v6_md5_hash_headers(hp, daddr, saddr, th, skb->len))
-		goto clear_hash;
-	if (tcp_md5_hash_skb_data(hp, skb, th->doff << 2))
-		goto clear_hash;
-	if (tcp_md5_hash_key(hp, key))
-		goto clear_hash;
-	ahash_request_set_crypt(req, NULL, md5_hash, 0);
-	if (crypto_ahash_final(req))
-		goto clear_hash;
-
-	tcp_put_md5sig_pool();
-	return 0;
-
-clear_hash:
-	tcp_put_md5sig_pool();
-clear_hash_noput:
-	memset(md5_hash, 0, 16);
-	return 1;
-}
-
-#endif
-
-static bool tcp_v6_inbound_md5_hash(const struct sock *sk,
-				    const struct sk_buff *skb)
-{
-#ifdef CONFIG_TCP_MD5SIG
-	const __u8 *hash_location = NULL;
-	struct tcp_md5sig_key *hash_expected;
-	const struct ipv6hdr *ip6h = ipv6_hdr(skb);
-	const struct tcphdr *th = tcp_hdr(skb);
-	int genhash;
-	u8 newhash[16];
-
-	hash_expected = tcp_v6_md5_do_lookup(sk, &ip6h->saddr);
-	hash_location = tcp_parse_md5sig_option(th);
-
-	/* We've parsed the options - do we have a hash? */
-	if (!hash_expected && !hash_location)
-		return false;
-
-	if (hash_expected && !hash_location) {
-		NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPMD5NOTFOUND);
-		return true;
-	}
-
-	if (!hash_expected && hash_location) {
-		NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPMD5UNEXPECTED);
-		return true;
-	}
-
-	/* check the signature */
-	genhash = tcp_v6_md5_hash_skb(newhash,
-				      hash_expected,
-				      NULL, skb);
-
-	if (genhash || memcmp(hash_location, newhash, 16) != 0) {
-		NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPMD5FAILURE);
-		net_info_ratelimited("MD5 Hash %s for [%pI6c]:%u->[%pI6c]:%u\n",
-				     genhash ? "failed" : "mismatch",
-				     &ip6h->saddr, ntohs(th->source),
-				     &ip6h->daddr, ntohs(th->dest));
-		return true;
-	}
-#endif
-	return false;
-}
-
 static void tcp_v6_init_req(struct request_sock *req,
 			    const struct sock *sk_listener,
 			    struct sk_buff *skb)
@@ -786,56 +571,24 @@ static void tcp_v6_send_response(const struct sock *sk, struct sk_buff *skb, u32
 	__be32 *topt;
 	struct hlist_head *extopt_list = NULL;
 	struct tcp_out_options extraopts;
-#ifdef CONFIG_TCP_MD5SIG
-	struct tcp_md5sig_key *key = NULL;
-	const __u8 *hash_location = NULL;
-	struct ipv6hdr *ipv6h = ipv6_hdr(skb);
-#endif
+
+	memset(&extraopts, 0, sizeof(extraopts));
 
 	if (tsecr)
 		tot_len += TCPOLEN_TSTAMP_ALIGNED;
 #ifdef CONFIG_TCP_MD5SIG
-	rcu_read_lock();
-	hash_location = tcp_parse_md5sig_option(th);
-	if (sk && sk_fullsock(sk)) {
-		key = tcp_v6_md5_do_lookup(sk, &ipv6h->saddr);
-	} else if (sk && sk->sk_state == TCP_TIME_WAIT) {
-		struct tcp_timewait_sock *tcptw = tcp_twsk(sk);
+{
+	int ret;
 
-		key = tcp_twsk_md5_key(tcptw);
-	} else if (sk && sk->sk_state == TCP_NEW_SYN_RECV) {
-		key = tcp_v6_md5_do_lookup(sk, &ipv6h->saddr);
-	} else if (hash_location) {
-		unsigned char newhash[16];
-		struct sock *sk1 = NULL;
-		int genhash;
+	ret = tcp_v6_md5_send_response_prepare(skb, 0,
+					       MAX_TCP_OPTION_SPACE - tot_len,
+					       &extraopts, sk);
 
-		/* active side is lost. Try to find listening socket through
-		 * source port, and then find md5 key through listening socket.
-		 * we are not loose security here:
-		 * Incoming packet is checked with md5 hash with finding key,
-		 * no RST generated if md5 hash doesn't match.
-		 */
-		sk1 = inet6_lookup_listener(dev_net(skb_dst(skb)->dev),
-					    &tcp_hashinfo, NULL, 0,
-					    &ipv6h->saddr,
-					    th->source, &ipv6h->daddr,
-					    ntohs(th->source), tcp_v6_iif(skb),
-					    tcp_v6_sdif(skb));
-		if (!sk1)
-			goto out;
+	if (ret == -1)
+		goto out;
 
-		key = tcp_v6_md5_do_lookup(sk1, &ipv6h->saddr);
-		if (!key)
-			goto out;
-
-		genhash = tcp_v6_md5_hash_skb(newhash, key, NULL, skb);
-		if (genhash || memcmp(hash_location, newhash, 16) != 0)
-			goto out;
-	}
-
-	if (key)
-		tot_len += TCPOLEN_MD5SIG_ALIGNED;
+	tot_len += ret;
+}
 #endif
 
 	if (sk)
@@ -848,8 +601,6 @@ static void tcp_v6_send_response(const struct sock *sk, struct sk_buff *skb, u32
 
 		if (!rst || !th->ack)
 			extraflags |= TCPHDR_ACK;
-
-		memset(&extraopts, 0, sizeof(extraopts));
 
 		used = tcp_extopt_response_prepare(skb, extraflags, remaining,
 						   &extraopts, sk);
@@ -888,13 +639,8 @@ static void tcp_v6_send_response(const struct sock *sk, struct sk_buff *skb, u32
 	}
 
 #ifdef CONFIG_TCP_MD5SIG
-	if (key) {
-		*topt++ = htonl((TCPOPT_NOP << 24) | (TCPOPT_NOP << 16) |
-				(TCPOPT_MD5SIG << 8) | TCPOLEN_MD5SIG);
-		tcp_v6_md5_hash_hdr((__u8 *)topt, key,
-				    &ipv6_hdr(skb)->saddr,
-				    &ipv6_hdr(skb)->daddr, t1);
-	}
+	if (extraopts.md5)
+		tcp_v6_md5_send_response_write(topt, skb, t1, &extraopts, sk);
 #endif
 
 	if (unlikely(extopt_list && !hlist_empty(extopt_list)))
@@ -942,10 +688,6 @@ static void tcp_v6_send_response(const struct sock *sk, struct sk_buff *skb, u32
 
 out:
 	kfree_skb(buff);
-
-#ifdef CONFIG_TCP_MD5SIG
-	rcu_read_unlock();
-#endif
 }
 
 static void tcp_v6_send_reset(const struct sock *sk, struct sk_buff *skb)
@@ -1071,9 +813,6 @@ static struct sock *tcp_v6_syn_recv_sock(const struct sock *sk, struct sk_buff *
 	struct inet_sock *newinet;
 	struct tcp_sock *newtp;
 	struct sock *newsk;
-#ifdef CONFIG_TCP_MD5SIG
-	struct tcp_md5sig_key *key;
-#endif
 	struct flowi6 fl6;
 
 	if (skb->protocol == htons(ETH_P_IP)) {
@@ -1218,18 +957,7 @@ static struct sock *tcp_v6_syn_recv_sock(const struct sock *sk, struct sk_buff *
 	newinet->inet_rcv_saddr = LOOPBACK4_IPV6;
 
 #ifdef CONFIG_TCP_MD5SIG
-	/* Copy over the MD5 key from the original socket */
-	key = tcp_v6_md5_do_lookup(sk, &newsk->sk_v6_daddr);
-	if (key) {
-		/* We're using one, so create a matching key
-		 * on the newsk structure. If we fail to get
-		 * memory, then we end up not copying the key
-		 * across. Shucks.
-		 */
-		tcp_md5_do_add(newsk, (union tcp_md5_addr *)&newsk->sk_v6_daddr,
-			       AF_INET6, 128, key->key, key->keylen,
-			       sk_gfp_mask(sk, GFP_ATOMIC));
-	}
+	tcp_v6_md5_syn_recv_sock(sk, newsk);
 #endif
 
 	if (__inet_inherit_port(sk, newsk) < 0) {
@@ -1691,14 +1419,6 @@ static const struct inet_connection_sock_af_ops ipv6_specific = {
 	.mtu_reduced	   = tcp_v6_mtu_reduced,
 };
 
-#ifdef CONFIG_TCP_MD5SIG
-static const struct tcp_sock_af_ops tcp_sock_ipv6_specific = {
-	.md5_lookup	=	tcp_v6_md5_lookup,
-	.calc_md5_hash	=	tcp_v6_md5_hash_skb,
-	.md5_parse	=	tcp_v6_parse_md5_keys,
-};
-#endif
-
 /*
  *	TCP over IPv4 via INET6 API
  */
@@ -1720,14 +1440,6 @@ static const struct inet_connection_sock_af_ops ipv6_mapped = {
 #endif
 	.mtu_reduced	   = tcp_v4_mtu_reduced,
 };
-
-#ifdef CONFIG_TCP_MD5SIG
-static const struct tcp_sock_af_ops tcp_sock_ipv6_mapped_specific = {
-	.md5_lookup	=	tcp_v4_md5_lookup,
-	.calc_md5_hash	=	tcp_v4_md5_hash_skb,
-	.md5_parse	=	tcp_v6_parse_md5_keys,
-};
-#endif
 
 /* NOTE: A lot of things set to zero explicitly by call to
  *       sk_alloc() so need not be done here.

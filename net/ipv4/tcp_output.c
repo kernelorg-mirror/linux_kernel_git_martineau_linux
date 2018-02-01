@@ -42,6 +42,7 @@
 #include <linux/gfp.h>
 #include <linux/module.h>
 #include <linux/static_key.h>
+#include <linux/tcp_md5.h>
 
 #include <trace/events/tcp.h>
 
@@ -3243,8 +3244,7 @@ static void tcp_connect_init(struct sock *sk)
 		tp->tcp_header_len += TCPOLEN_TSTAMP_ALIGNED;
 
 #ifdef CONFIG_TCP_MD5SIG
-	if (tp->af_specific->md5_lookup(sk, sk))
-		tp->tcp_header_len += TCPOLEN_MD5SIG_ALIGNED;
+	tcp_md5_add_header_len(sk, sk);
 #endif
 
 	if (unlikely(!hlist_empty(&tp->tcp_option_list)))

@@ -406,7 +406,6 @@ void tcp_parse_options(const struct net *net, const struct sk_buff *skb,
 		       struct tcp_options_received *opt_rx,
 		       int estab, struct tcp_fastopen_cookie *foc,
 		       struct sock *sk);
-const u8 *tcp_parse_md5sig_option(const struct tcphdr *th);
 
 /*
  *	TCP v4 functions exported for the inet6 API
@@ -1416,30 +1415,6 @@ static inline void tcp_clear_all_retrans_hints(struct tcp_sock *tp)
 	tp->retransmit_skb_hint = NULL;
 }
 
-union tcp_md5_addr {
-	struct in_addr  a4;
-#if IS_ENABLED(CONFIG_IPV6)
-	struct in6_addr	a6;
-#endif
-};
-
-/* - key database */
-struct tcp_md5sig_key {
-	struct hlist_node	node;
-	u8			keylen;
-	u8			family; /* AF_INET or AF_INET6 */
-	union tcp_md5_addr	addr;
-	u8			prefixlen;
-	u8			key[TCP_MD5SIG_MAXKEYLEN];
-	struct rcu_head		rcu;
-};
-
-/* - sock block */
-struct tcp_md5sig_info {
-	struct hlist_head	head;
-	struct rcu_head		rcu;
-};
-
 /* - pseudo header */
 struct tcp4_pseudohdr {
 	__be32		saddr;
@@ -1455,58 +1430,6 @@ struct tcp6_pseudohdr {
 	__be32		len;
 	__be32		protocol;	/* including padding */
 };
-
-union tcp_md5sum_block {
-	struct tcp4_pseudohdr ip4;
-#if IS_ENABLED(CONFIG_IPV6)
-	struct tcp6_pseudohdr ip6;
-#endif
-};
-
-/* - pool: digest algorithm, hash description and scratch buffer */
-struct tcp_md5sig_pool {
-	struct ahash_request	*md5_req;
-	void			*scratch;
-};
-
-/* - functions */
-int tcp_v4_md5_hash_skb(char *md5_hash, const struct tcp_md5sig_key *key,
-			const struct sock *sk, const struct sk_buff *skb);
-int tcp_md5_do_add(struct sock *sk, const union tcp_md5_addr *addr,
-		   int family, u8 prefixlen, const u8 *newkey, u8 newkeylen,
-		   gfp_t gfp);
-int tcp_md5_do_del(struct sock *sk, const union tcp_md5_addr *addr,
-		   int family, u8 prefixlen);
-struct tcp_md5sig_key *tcp_v4_md5_lookup(const struct sock *sk,
-					 const struct sock *addr_sk);
-
-#ifdef CONFIG_TCP_MD5SIG
-struct tcp_md5sig_key *tcp_md5_do_lookup(const struct sock *sk,
-					 const union tcp_md5_addr *addr,
-					 int family);
-#define tcp_twsk_md5_key(twsk)	((twsk)->tw_md5_key)
-#else
-static inline struct tcp_md5sig_key *tcp_md5_do_lookup(const struct sock *sk,
-					 const union tcp_md5_addr *addr,
-					 int family)
-{
-	return NULL;
-}
-#define tcp_twsk_md5_key(twsk)	NULL
-#endif
-
-bool tcp_alloc_md5sig_pool(void);
-
-struct tcp_md5sig_pool *tcp_get_md5sig_pool(void);
-static inline void tcp_put_md5sig_pool(void)
-{
-	local_bh_enable();
-}
-
-int tcp_md5_hash_skb_data(struct tcp_md5sig_pool *, const struct sk_buff *,
-			  unsigned int header_len);
-int tcp_md5_hash_key(struct tcp_md5sig_pool *hp,
-		     const struct tcp_md5sig_key *key);
 
 /* From tcp_fastopen.c */
 void tcp_fastopen_cache_get(struct sock *sk, u16 *mss,
