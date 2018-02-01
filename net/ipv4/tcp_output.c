@@ -662,6 +662,13 @@ static unsigned int tcp_established_options(struct sock *sk, struct sk_buff *skb
 
 	opts->options = 0;
 
+	if (likely(tp->rx_opt.tstamp_ok)) {
+		opts->options |= OPTION_TS;
+		opts->tsval = skb ? tcp_skb_timestamp(skb) + tp->tsoffset : 0;
+		opts->tsecr = tp->rx_opt.ts_recent;
+		size += TCPOLEN_TSTAMP_ALIGNED;
+	}
+
 #ifdef CONFIG_TCP_MD5SIG
 	opts->md5 = tp->af_specific->md5_lookup(sk, sk);
 	if (unlikely(opts->md5)) {
@@ -671,13 +678,6 @@ static unsigned int tcp_established_options(struct sock *sk, struct sk_buff *skb
 #else
 	opts->md5 = NULL;
 #endif
-
-	if (likely(tp->rx_opt.tstamp_ok)) {
-		opts->options |= OPTION_TS;
-		opts->tsval = skb ? tcp_skb_timestamp(skb) + tp->tsoffset : 0;
-		opts->tsecr = tp->rx_opt.ts_recent;
-		size += TCPOLEN_TSTAMP_ALIGNED;
-	}
 
 	if (unlikely(!hlist_empty(&tp->tcp_option_list)))
 		size += tcp_extopt_prepare(skb, 0, MAX_TCP_OPTION_SPACE - size,
