@@ -62,7 +62,6 @@
 #include <linux/init.h>
 #include <linux/times.h>
 #include <linux/slab.h>
-#include <linux/tcp_md5.h>
 
 #include <net/net_namespace.h>
 #include <net/icmp.h>
@@ -1249,11 +1248,6 @@ process:
 		struct sock *nsk;
 
 		sk = req->rsk_listener;
-		if (unlikely(tcp_v4_inbound_md5_hash(sk, skb))) {
-			sk_drops_add(sk, skb);
-			reqsk_put(req);
-			goto discard_it;
-		}
 		if (unlikely(sk->sk_state != TCP_LISTEN)) {
 			inet_csk_reqsk_queue_drop_and_put(sk, req);
 			goto lookup;
@@ -1291,9 +1285,6 @@ process:
 	}
 
 	if (!xfrm4_policy_check(sk, XFRM_POLICY_IN, skb))
-		goto discard_and_relse;
-
-	if (tcp_v4_inbound_md5_hash(sk, skb))
 		goto discard_and_relse;
 
 	nf_reset(skb);

@@ -32,30 +32,9 @@ struct tcp_md5sig_key {
 int tcp_md5_parse_keys(struct sock *sk, int optname, char __user *optval,
 		       int optlen);
 
-bool tcp_v4_inbound_md5_hash(const struct sock *sk,
-			     const struct sk_buff *skb);
-
-bool tcp_v6_inbound_md5_hash(const struct sock *sk,
-			     const struct sk_buff *skb);
-
 int tcp_md5_diag_get_aux(struct sock *sk, bool net_admin, struct sk_buff *skb);
 
 int tcp_md5_diag_get_aux_size(struct sock *sk, bool net_admin);
 
-#else
-
-static inline bool tcp_v4_inbound_md5_hash(const struct sock *sk,
-					   const struct sk_buff *skb)
-{
-	return false;
-}
-
-static inline bool tcp_v6_inbound_md5_hash(const struct sock *sk,
-					   const struct sk_buff *skb)
-{
-	return false;
-}
-
-#endif
-
+#endif /* CONFIG_TCP_MD5SIG */
 #endif /* _LINUX_TCP_MD5_H */

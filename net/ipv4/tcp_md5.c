@@ -30,6 +30,10 @@ static DEFINE_PER_CPU(struct tcp_md5sig_pool, tcp_md5sig_pool);
 static DEFINE_MUTEX(tcp_md5sig_mutex);
 static bool tcp_md5sig_pool_populated;
 
+static bool tcp_inbound_md5_hash(struct sock *sk, const struct sk_buff *skb,
+				 struct tcp_options_received *opt_rx,
+				 struct tcp_extopt_store *store);
+
 static unsigned int tcp_md5_extopt_prepare(struct sk_buff *skb, u8 flags,
 					   unsigned int remaining,
 					   struct tcp_out_options *opts,
@@ -77,6 +81,7 @@ struct tcp_md5_extopt {
 
 static const struct tcp_extopt_ops tcp_md5_extra_ops = {
 	.option_kind		= TCPOPT_MD5SIG,
+	.check			= tcp_inbound_md5_hash,
 	.prepare		= tcp_md5_extopt_prepare,
 	.write			= tcp_md5_extopt_write,
 	.response_prepare	= tcp_md5_send_response_prepare,
@@ -863,8 +868,8 @@ static struct tcp_md5sig_key *tcp_v4_md5_lookup(const struct sock *sk,
 }
 
 /* Called with rcu_read_lock() */
-bool tcp_v4_inbound_md5_hash(const struct sock *sk,
-			     const struct sk_buff *skb)
+static bool tcp_v4_inbound_md5_hash(const struct sock *sk,
+				    const struct sk_buff *skb)
 {
 	/* This gets called for each TCP segment that arrives
 	 * so we want to be efficient.
@@ -918,8 +923,8 @@ bool tcp_v4_inbound_md5_hash(const struct sock *sk,
 }
 
 #if IS_ENABLED(CONFIG_IPV6)
-bool tcp_v6_inbound_md5_hash(const struct sock *sk,
-			     const struct sk_buff *skb)
+static bool tcp_v6_inbound_md5_hash(const struct sock *sk,
+				    const struct sk_buff *skb)
 {
 	const __u8 *hash_location = NULL;
 	struct tcp_md5sig_key *hash_expected;
@@ -961,7 +966,6 @@ bool tcp_v6_inbound_md5_hash(const struct sock *sk,
 
 	return false;
 }
-EXPORT_SYMBOL_GPL(tcp_v6_inbound_md5_hash);
 
 static struct tcp_md5sig_key *tcp_v6_md5_lookup(const struct sock *sk,
 						const struct sock *addr_sk)
@@ -970,6 +974,21 @@ static struct tcp_md5sig_key *tcp_v6_md5_lookup(const struct sock *sk,
 }
 EXPORT_SYMBOL_GPL(tcp_v6_md5_lookup);
 #endif
+
+static bool tcp_inbound_md5_hash(struct sock *sk, const struct sk_buff *skb,
+				 struct tcp_options_received *opt_rx,
+				 struct tcp_extopt_store *store)
+{
+	if (skb->protocol == htons(ETH_P_IP)) {
+		return tcp_v4_inbound_md5_hash(sk, skb);
+#if IS_ENABLED(CONFIG_IPV6)
+	} else {
+		return tcp_v6_inbound_md5_hash(sk, skb);
+#endif
+	}
+
+	return false;
+}
 
 static void tcp_diag_md5sig_fill(struct tcp_diag_md5sig *info,
 				 const struct tcp_md5sig_key *key)
