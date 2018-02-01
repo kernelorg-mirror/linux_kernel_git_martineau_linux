@@ -499,6 +499,9 @@ done:
 
 static void tcp_v6_reqsk_destructor(struct request_sock *req)
 {
+	if (unlikely(!hlist_empty(&tcp_rsk(req)->tcp_option_list)))
+		tcp_extopt_destroy(req_to_sk(req));
+
 	kfree(inet_rsk(req)->ipv6_opt);
 	kfree_skb(inet_rsk(req)->pktopts);
 }
@@ -788,6 +791,8 @@ static void tcp_v6_send_response(const struct sock *sk, struct sk_buff *skb, u32
 	unsigned int tot_len = sizeof(struct tcphdr);
 	struct dst_entry *dst;
 	__be32 *topt;
+	struct hlist_head *extopt_list = NULL;
+	struct tcp_out_options extraopts;
 
 	if (tsecr)
 		tot_len += TCPOLEN_TSTAMP_ALIGNED;
@@ -795,6 +800,25 @@ static void tcp_v6_send_response(const struct sock *sk, struct sk_buff *skb, u32
 	if (key)
 		tot_len += TCPOLEN_MD5SIG_ALIGNED;
 #endif
+
+	if (sk)
+		extopt_list = tcp_extopt_get_list(sk);
+
+	if (unlikely(extopt_list && !hlist_empty(extopt_list))) {
+		unsigned int remaining = MAX_TCP_OPTION_SPACE - tot_len;
+		u8 extraflags = rst ? TCPHDR_RST : 0;
+		int used;
+
+		if (!rst || !th->ack)
+			extraflags |= TCPHDR_ACK;
+
+		memset(&extraopts, 0, sizeof(extraopts));
+
+		used = tcp_extopt_response_prepare(skb, extraflags, remaining,
+						   &extraopts, sk);
+
+		tot_len += used;
+	}
 
 	buff = alloc_skb(MAX_HEADER + sizeof(struct ipv6hdr) + tot_len,
 			 GFP_ATOMIC);
@@ -835,6 +859,9 @@ static void tcp_v6_send_response(const struct sock *sk, struct sk_buff *skb, u32
 				    &ipv6_hdr(skb)->daddr, t1);
 	}
 #endif
+
+	if (unlikely(extopt_list && !hlist_empty(extopt_list)))
+		tcp_extopt_response_write(topt, skb, t1, &extraopts, sk);
 
 	memset(&fl6, 0, sizeof(fl6));
 	fl6.daddr = ipv6_hdr(skb)->saddr;
@@ -1229,6 +1256,11 @@ static struct sock *tcp_v6_syn_recv_sock(const struct sock *sk, struct sk_buff *
 				tcp_v6_restore_cb(newnp->pktoptions);
 				skb_set_owner_r(newnp->pktoptions, newsk);
 			}
+		}
+
+		if (unlikely(!hlist_empty(&tcp_rsk(req)->tcp_option_list))) {
+			tcp_extopt_move(req_to_sk(req), newsk);
+			INIT_HLIST_HEAD(&tcp_rsk(req)->tcp_option_list);
 		}
 	}
 

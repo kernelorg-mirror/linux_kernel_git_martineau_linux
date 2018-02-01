@@ -115,6 +115,24 @@ static inline void tcp_clear_options(struct tcp_options_received *rx_opt)
 #endif
 }
 
+#define OPTION_SACK_ADVERTISE	(1 << 0)
+#define OPTION_TS		(1 << 1)
+#define OPTION_MD5		(1 << 2)
+#define OPTION_WSCALE		(1 << 3)
+#define OPTION_FAST_OPEN_COOKIE	(1 << 8)
+#define OPTION_SMC		(1 << 9)
+
+struct tcp_out_options {
+	u16 options;		/* bit field of OPTION_* */
+	u16 mss;		/* 0 to disable */
+	u8 ws;			/* window scale, 0 to disable */
+	u8 num_sack_blocks;	/* number of SACK blocks to include */
+	u8 hash_size;		/* bytes in hash_location */
+	__u8 *hash_location;	/* temporary pointer, overloaded */
+	__u32 tsval, tsecr;	/* need to include OPTION_TS */
+	struct tcp_fastopen_cookie *fastopen_cookie;	/* Fast open cookie */
+};
+
 /* This is the max number of SACKS that we'll generate and process. It's safe
  * to increase this, although since:
  *   size = TCPOLEN_SACK_BASE_ALIGNED (4) + n * TCPOLEN_SACK_PERBLOCK (8)
@@ -137,6 +155,7 @@ struct tcp_request_sock {
 						  * FastOpen it's the seq#
 						  * after data-in-SYN.
 						  */
+	struct hlist_head		tcp_option_list;
 };
 
 static inline struct tcp_request_sock *tcp_rsk(const struct request_sock *req)
@@ -384,6 +403,8 @@ struct tcp_sock {
 	 */
 	struct request_sock *fastopen_rsk;
 	u32	*saved_syn;
+
+	struct hlist_head tcp_option_list;
 };
 
 enum tsq_enum {
@@ -411,6 +432,11 @@ static inline struct tcp_sock *tcp_sk(const struct sock *sk)
 	return (struct tcp_sock *)sk;
 }
 
+static inline struct sock *tcp_to_sk(const struct tcp_sock *tp)
+{
+	return (struct sock *)tp;
+}
+
 struct tcp_timewait_sock {
 	struct inet_timewait_sock tw_sk;
 #define tw_rcv_nxt tw_sk.__tw_common.skc_tw_rcv_nxt
@@ -423,6 +449,8 @@ struct tcp_timewait_sock {
 	u32			  tw_last_oow_ack_time;
 
 	long			  tw_ts_recent_stamp;
+
+	struct hlist_head	  tcp_option_list;
 #ifdef CONFIG_TCP_MD5SIG
 	struct tcp_md5sig_key	  *tw_md5_key;
 #endif

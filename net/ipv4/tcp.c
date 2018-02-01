@@ -414,6 +414,7 @@ void tcp_init_sock(struct sock *sk)
 	tcp_init_xmit_timers(sk);
 	INIT_LIST_HEAD(&tp->tsq_node);
 	INIT_LIST_HEAD(&tp->tsorted_sent_queue);
+	INIT_HLIST_HEAD(&tp->tcp_option_list);
 
 	icsk->icsk_rto = TCP_TIMEOUT_INIT;
 	tp->mdev_us = jiffies_to_usecs(TCP_TIMEOUT_INIT);
@@ -3506,6 +3507,331 @@ EXPORT_SYMBOL(tcp_md5_hash_key);
 
 #endif
 
+struct hlist_head *tcp_extopt_get_list(const struct sock *sk)
+{
+	if (sk_fullsock(sk))
+		return &tcp_sk(sk)->tcp_option_list;
+	else if (sk->sk_state == TCP_NEW_SYN_RECV)
+		return &tcp_rsk(inet_reqsk(sk))->tcp_option_list;
+	else if (sk->sk_state == TCP_TIME_WAIT)
+		return &tcp_twsk(sk)->tcp_option_list;
+
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(tcp_extopt_get_list);
+
+/* Caller must ensure that rcu is locked */
+struct tcp_extopt_store *tcp_extopt_find_kind(u32 kind, const struct sock *sk)
+{
+	struct tcp_extopt_store *entry;
+	struct hlist_head *lhead;
+
+	lhead = tcp_extopt_get_list(sk);
+
+	hlist_for_each_entry_rcu(entry, lhead, list) {
+		if (entry->ops->option_kind == kind)
+			return entry;
+	}
+
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(tcp_extopt_find_kind);
+
+void tcp_extopt_parse(u32 opcode, int opsize, const unsigned char *opptr,
+		      const struct sk_buff *skb,
+		      struct tcp_options_received *opt_rx, struct sock *sk)
+{
+	struct tcp_extopt_store *entry;
+
+	rcu_read_lock();
+	entry = tcp_extopt_find_kind(opcode, sk);
+
+	if (entry && entry->ops->parse)
+		entry->ops->parse(opsize, opptr, skb, opt_rx, sk, entry);
+	rcu_read_unlock();
+}
+
+bool tcp_extopt_check(struct sock *sk, const struct sk_buff *skb,
+		      struct tcp_options_received *opt_rx)
+{
+	struct tcp_extopt_store *entry;
+	struct hlist_head *lhead;
+	bool drop = false;
+
+	lhead = tcp_extopt_get_list(sk);
+
+	rcu_read_lock();
+	hlist_for_each_entry_rcu(entry, lhead, list) {
+		bool ret = false;
+
+		if (entry->ops->check)
+			ret = entry->ops->check(sk, skb, opt_rx, entry);
+
+		if (ret)
+			drop = true;
+	}
+	rcu_read_unlock();
+
+	return drop;
+}
+EXPORT_SYMBOL_GPL(tcp_extopt_check);
+
+void tcp_extopt_post_process(struct sock *sk,
+			     struct tcp_options_received *opt_rx)
+{
+	struct tcp_extopt_store *entry;
+	struct hlist_head *lhead;
+
+	lhead = tcp_extopt_get_list(sk);
+
+	rcu_read_lock();
+	hlist_for_each_entry_rcu(entry, lhead, list) {
+		if (entry->ops->post_process)
+			entry->ops->post_process(sk, opt_rx, entry);
+	}
+	rcu_read_unlock();
+}
+
+unsigned int tcp_extopt_prepare(struct sk_buff *skb, u8 flags,
+				unsigned int remaining,
+				struct tcp_out_options *opts,
+				const struct sock *sk)
+{
+	struct tcp_extopt_store *entry;
+	struct hlist_head *lhead;
+	unsigned int used = 0;
+
+	if (!sk)
+		return 0;
+
+	lhead = tcp_extopt_get_list(sk);
+
+	rcu_read_lock();
+	hlist_for_each_entry_rcu(entry, lhead, list) {
+		if (unlikely(!entry->ops->prepare))
+			continue;
+
+		used += entry->ops->prepare(skb, flags, remaining - used, opts,
+					    sk, entry);
+	}
+	rcu_read_unlock();
+
+	return roundup(used, 4);
+}
+
+void tcp_extopt_write(__be32 *ptr, struct sk_buff *skb,
+		      struct tcp_out_options *opts, struct sock *sk)
+{
+	struct tcp_extopt_store *entry;
+	struct hlist_head *lhead;
+
+	if (!sk)
+		return;
+
+	lhead = tcp_extopt_get_list(sk);
+
+	rcu_read_lock();
+	hlist_for_each_entry_rcu(entry, lhead, list) {
+		if (unlikely(!entry->ops->write))
+			continue;
+
+		ptr = entry->ops->write(ptr, skb, opts, sk, entry);
+	}
+	rcu_read_unlock();
+}
+EXPORT_SYMBOL_GPL(tcp_extopt_write);
+
+int tcp_extopt_response_prepare(struct sk_buff *orig, u8 flags,
+				unsigned int remaining,
+				struct tcp_out_options *opts,
+				const struct sock *sk)
+{
+	struct tcp_extopt_store *entry;
+	struct hlist_head *lhead;
+	unsigned int used = 0;
+
+	if (!sk)
+		return 0;
+
+	lhead = tcp_extopt_get_list(sk);
+
+	rcu_read_lock();
+	hlist_for_each_entry_rcu(entry, lhead, list) {
+		int ret;
+
+		if (unlikely(!entry->ops->response_prepare))
+			continue;
+
+		ret = entry->ops->response_prepare(orig, flags,
+						   remaining - used, opts,
+						   sk, entry);
+
+		used += ret;
+	}
+	rcu_read_unlock();
+
+	return roundup(used, 4);
+}
+EXPORT_SYMBOL_GPL(tcp_extopt_response_prepare);
+
+void tcp_extopt_response_write(__be32 *ptr, struct sk_buff *orig,
+			       struct tcphdr *th, struct tcp_out_options *opts,
+			       const struct sock *sk)
+{
+	struct tcp_extopt_store *entry;
+	struct hlist_head *lhead;
+
+	if (!sk)
+		return;
+
+	lhead = tcp_extopt_get_list(sk);
+
+	rcu_read_lock();
+	hlist_for_each_entry_rcu(entry, lhead, list) {
+		if (unlikely(!entry->ops->response_write))
+			continue;
+
+		ptr = entry->ops->response_write(ptr, orig, th, opts, sk, entry);
+	}
+	rcu_read_unlock();
+}
+EXPORT_SYMBOL_GPL(tcp_extopt_response_write);
+
+int tcp_extopt_add_header(const struct sock *orig, const struct sock *sk)
+{
+	struct tcp_extopt_store *entry;
+	struct hlist_head *lhead;
+	int tcp_header_len = 0;
+
+	lhead = tcp_extopt_get_list(sk);
+
+	rcu_read_lock();
+	hlist_for_each_entry_rcu(entry, lhead, list) {
+		if (unlikely(!entry->ops->add_header_len))
+			continue;
+
+		tcp_header_len += entry->ops->add_header_len(orig, sk, entry);
+	}
+	rcu_read_unlock();
+
+	return tcp_header_len;
+}
+
+/* Socket lock must be held when calling this function */
+int tcp_register_extopt(struct tcp_extopt_store *store, struct sock *sk)
+{
+	struct hlist_node *add_before = NULL;
+	struct tcp_extopt_store *entry;
+	struct hlist_head *lhead;
+	int ret = 0;
+
+	lhead = tcp_extopt_get_list(sk);
+
+	if (!store->ops->option_kind)
+		return -EINVAL;
+
+	if (!try_module_get(store->ops->owner))
+		return -ENOENT;
+
+	hlist_for_each_entry_rcu(entry, lhead, list) {
+		if (entry->ops->option_kind == store->ops->option_kind) {
+			pr_notice("Option kind %u already registered\n",
+				  store->ops->option_kind);
+			module_put(store->ops->owner);
+			return -EEXIST;
+		}
+
+		if (entry->ops->priority <= store->ops->priority)
+			add_before = &entry->list;
+	}
+
+	if (add_before)
+		hlist_add_behind_rcu(&store->list, add_before);
+	else
+		hlist_add_head_rcu(&store->list, lhead);
+
+	pr_debug("Option kind %u registered\n", store->ops->option_kind);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(tcp_register_extopt);
+
+void tcp_extopt_copy(struct sock *listener, struct request_sock *req,
+		     struct tcp_options_received *opt)
+{
+	struct tcp_extopt_store *entry;
+	struct hlist_head *from, *to;
+
+	from = tcp_extopt_get_list(listener);
+	to = tcp_extopt_get_list(req_to_sk(req));
+
+	rcu_read_lock();
+	hlist_for_each_entry_rcu(entry, from, list) {
+		struct tcp_extopt_store *new;
+
+		if (!try_module_get(entry->ops->owner)) {
+			pr_err("%s Module get failed while copying\n", __func__);
+			continue;
+		}
+
+		new = entry->ops->copy(listener, req, opt, entry);
+		if (!new) {
+			module_put(entry->ops->owner);
+			continue;
+		}
+
+		hlist_add_tail_rcu(&new->list, to);
+	}
+	rcu_read_unlock();
+}
+
+void tcp_extopt_move(struct sock *from, struct sock *to)
+{
+	struct tcp_extopt_store *entry;
+	struct hlist_head *lfrom, *lto;
+	struct hlist_node *tmp;
+
+	lfrom = tcp_extopt_get_list(from);
+	lto = tcp_extopt_get_list(to);
+
+	rcu_read_lock();
+	hlist_for_each_entry_safe(entry, tmp, lfrom, list) {
+		hlist_del_rcu(&entry->list);
+
+		if (entry->ops->move) {
+			entry = entry->ops->move(from, to, entry);
+			if (!entry)
+				continue;
+		}
+
+		hlist_add_tail_rcu(&entry->list, lto);
+	}
+	rcu_read_unlock();
+}
+EXPORT_SYMBOL_GPL(tcp_extopt_move);
+
+void tcp_extopt_destroy(struct sock *sk)
+{
+	struct tcp_extopt_store *entry;
+	struct hlist_head *lhead;
+	struct hlist_node *tmp;
+
+	lhead = tcp_extopt_get_list(sk);
+
+	rcu_read_lock();
+	hlist_for_each_entry_safe(entry, tmp, lhead, list) {
+		struct module *owner = entry->ops->owner;
+
+		hlist_del_rcu(&entry->list);
+
+		entry->ops->destroy(entry);
+
+		module_put(owner);
+	}
+	rcu_read_unlock();
+}
+EXPORT_SYMBOL_GPL(tcp_extopt_destroy);
+
 void tcp_done(struct sock *sk)
 {
 	struct request_sock *req = tcp_sk(sk)->fastopen_rsk;
@@ -3654,7 +3980,6 @@ void __init tcp_init(void)
 		spin_lock_init(&tcp_hashinfo.bhash[i].lock);
 		INIT_HLIST_HEAD(&tcp_hashinfo.bhash[i].chain);
 	}
-
 
 	cnt = tcp_hashinfo.ehash_mask + 1;
 	sysctl_tcp_max_orphans = cnt / 2;

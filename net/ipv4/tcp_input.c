@@ -3716,7 +3716,7 @@ static int smc_parse_options(const struct tcphdr *th,
 void tcp_parse_options(const struct net *net,
 		       const struct sk_buff *skb,
 		       struct tcp_options_received *opt_rx, int estab,
-		       struct tcp_fastopen_cookie *foc)
+		       struct tcp_fastopen_cookie *foc, struct sock *sk)
 {
 	const unsigned char *ptr;
 	const struct tcphdr *th = tcp_hdr(skb);
@@ -3816,9 +3816,18 @@ void tcp_parse_options(const struct net *net,
 					tcp_parse_fastopen_option(opsize -
 						TCPOLEN_EXP_FASTOPEN_BASE,
 						ptr + 2, th->syn, foc, true);
-				else
-					smc_parse_options(th, opt_rx, ptr,
-							  opsize);
+				else if (smc_parse_options(th, opt_rx, ptr,
+							   opsize))
+					break;
+				else if (opsize >= TCPOLEN_EXP_BASE)
+					tcp_extopt_parse(get_unaligned_be32(ptr),
+							 opsize, ptr, skb,
+							 opt_rx, sk);
+				break;
+
+			default:
+				tcp_extopt_parse(opcode, opsize, ptr, skb,
+						 opt_rx, sk);
 				break;
 
 			}
@@ -3869,11 +3878,13 @@ static bool tcp_fast_parse_options(const struct net *net,
 			goto extra_opt_check;
 	}
 
-	tcp_parse_options(net, skb, &tp->rx_opt, 1, NULL);
+	tcp_parse_options(net, skb, &tp->rx_opt, 1, NULL, tcp_to_sk(tp));
 	if (tp->rx_opt.saw_tstamp && tp->rx_opt.rcv_tsecr)
 		tp->rx_opt.rcv_tsecr -= tp->tsoffset;
 
 extra_opt_check:
+	if (unlikely(!hlist_empty(&tp->tcp_option_list)))
+		return tcp_extopt_check(tcp_to_sk(tp), skb, &tp->rx_opt);
 	return false;
 }
 
@@ -5350,6 +5361,9 @@ void tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 
 	tp->rx_opt.saw_tstamp = 0;
 
+	if (!hlist_empty(&tp->tcp_option_list))
+		goto slow_path;
+
 	/*	pred_flags is 0xS?10 << 16 + snd_wnd
 	 *	if header_prediction is to be made
 	 *	'S' will always be tp->tcp_header_len >> 2
@@ -5537,7 +5551,7 @@ static bool tcp_rcv_fastopen_synack(struct sock *sk, struct sk_buff *synack,
 		/* Get original SYNACK MSS value if user MSS sets mss_clamp */
 		tcp_clear_options(&opt);
 		opt.user_mss = opt.mss_clamp = 0;
-		tcp_parse_options(sock_net(sk), synack, &opt, 0, NULL);
+		tcp_parse_options(sock_net(sk), synack, &opt, 0, NULL, sk);
 		mss = opt.mss_clamp;
 	}
 
@@ -5600,9 +5614,13 @@ static int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
 	int saved_clamp = tp->rx_opt.mss_clamp;
 	bool fastopen_fail;
 
-	tcp_parse_options(sock_net(sk), skb, &tp->rx_opt, 0, &foc);
+	tcp_parse_options(sock_net(sk), skb, &tp->rx_opt, 0, &foc, sk);
 	if (tp->rx_opt.saw_tstamp && tp->rx_opt.rcv_tsecr)
 		tp->rx_opt.rcv_tsecr -= tp->tsoffset;
+
+	if (unlikely(!hlist_empty(&tp->tcp_option_list)) &&
+	    tcp_extopt_check(sk, skb, &tp->rx_opt))
+		goto discard;
 
 	if (th->ack) {
 		/* rfc793:
@@ -5685,6 +5703,9 @@ static int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
 		} else {
 			tp->tcp_header_len = sizeof(struct tcphdr);
 		}
+
+		if (unlikely(!hlist_empty(&tp->tcp_option_list)))
+			tcp_extopt_post_process(sk, &tp->rx_opt);
 
 		tcp_sync_mss(sk, icsk->icsk_pmtu_cookie);
 		tcp_initialize_rcv_mss(sk);
@@ -5778,6 +5799,9 @@ discard:
 		tp->max_window = tp->snd_wnd;
 
 		tcp_ecn_rcv_syn(tp, th);
+
+		if (unlikely(!hlist_empty(&tp->tcp_option_list)))
+			tcp_extopt_post_process(sk, &tp->rx_opt);
 
 		tcp_mtup_init(sk);
 		tcp_sync_mss(sk, icsk->icsk_pmtu_cookie);
@@ -6262,12 +6286,17 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 
 	tcp_rsk(req)->af_specific = af_ops;
 	tcp_rsk(req)->ts_off = 0;
+	INIT_HLIST_HEAD(&tcp_rsk(req)->tcp_option_list);
 
 	tcp_clear_options(&tmp_opt);
 	tmp_opt.mss_clamp = af_ops->mss_clamp;
 	tmp_opt.user_mss  = tp->rx_opt.user_mss;
 	tcp_parse_options(sock_net(sk), skb, &tmp_opt, 0,
-			  want_cookie ? NULL : &foc);
+			  want_cookie ? NULL : &foc, sk);
+
+	if (unlikely(!hlist_empty(&tp->tcp_option_list)) &&
+	    tcp_extopt_check(sk, skb, &tmp_opt))
+		goto drop_and_free;
 
 	if (want_cookie && !tmp_opt.saw_tstamp)
 		tcp_clear_options(&tmp_opt);
@@ -6328,6 +6357,10 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 		tcp_reqsk_record_syn(sk, req, skb);
 		fastopen_sk = tcp_try_fastopen(sk, skb, req, &foc, dst);
 	}
+
+	if (unlikely(!hlist_empty(&tp->tcp_option_list)))
+		tcp_extopt_copy(sk, req, &tmp_opt);
+
 	if (fastopen_sk) {
 		af_ops->send_synack(fastopen_sk, dst, &fl, req,
 				    &foc, TCP_SYNACK_FASTOPEN);

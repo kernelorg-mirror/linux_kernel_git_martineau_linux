@@ -95,9 +95,10 @@ tcp_timewait_state_process(struct inet_timewait_sock *tw, struct sk_buff *skb,
 	struct tcp_timewait_sock *tcptw = tcp_twsk((struct sock *)tw);
 	bool paws_reject = false;
 
-	tmp_opt.saw_tstamp = 0;
+	tcp_clear_options(&tmp_opt);
 	if (th->doff > (sizeof(*th) >> 2) && tcptw->tw_ts_recent_stamp) {
-		tcp_parse_options(twsk_net(tw), skb, &tmp_opt, 0, NULL);
+		tcp_parse_options(twsk_net(tw), skb, &tmp_opt, 0, NULL,
+				  (struct sock *)tw);
 
 		if (tmp_opt.saw_tstamp) {
 			if (tmp_opt.rcv_tsecr)
@@ -107,6 +108,10 @@ tcp_timewait_state_process(struct inet_timewait_sock *tw, struct sk_buff *skb,
 			paws_reject = tcp_paws_reject(&tmp_opt, th->rst);
 		}
 	}
+
+	if (unlikely(!hlist_empty(&tcptw->tcp_option_list)) &&
+	    tcp_extopt_check((struct sock *)tw, skb, &tmp_opt))
+		return TCP_TW_SUCCESS;
 
 	if (tw->tw_substate == TCP_FIN_WAIT2) {
 		/* Just repeat all the checks of tcp_rcv_state_process() */
@@ -251,7 +256,7 @@ EXPORT_SYMBOL(tcp_timewait_state_process);
 void tcp_time_wait(struct sock *sk, int state, int timeo)
 {
 	const struct inet_connection_sock *icsk = inet_csk(sk);
-	const struct tcp_sock *tp = tcp_sk(sk);
+	struct tcp_sock *tp = tcp_sk(sk);
 	struct inet_timewait_sock *tw;
 	struct inet_timewait_death_row *tcp_death_row = &sock_net(sk)->ipv4.tcp_death_row;
 
@@ -271,6 +276,7 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 		tcptw->tw_ts_recent_stamp = tp->rx_opt.ts_recent_stamp;
 		tcptw->tw_ts_offset	= tp->tsoffset;
 		tcptw->tw_last_oow_ack_time = 0;
+		INIT_HLIST_HEAD(&tcptw->tcp_option_list);
 
 #if IS_ENABLED(CONFIG_IPV6)
 		if (tw->tw_family == PF_INET6) {
@@ -284,6 +290,10 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 		}
 #endif
 
+		if (unlikely(!hlist_empty(&tp->tcp_option_list))) {
+			tcp_extopt_move(sk, (struct sock *)tw);
+			INIT_HLIST_HEAD(&tp->tcp_option_list);
+		}
 #ifdef CONFIG_TCP_MD5SIG
 		/*
 		 * The timewait bucket does not have the key DB from the
@@ -335,12 +345,15 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 
 void tcp_twsk_destructor(struct sock *sk)
 {
-#ifdef CONFIG_TCP_MD5SIG
 	struct tcp_timewait_sock *twsk = tcp_twsk(sk);
 
+#ifdef CONFIG_TCP_MD5SIG
 	if (twsk->tw_md5_key)
 		kfree_rcu(twsk->tw_md5_key, rcu);
 #endif
+
+	if (unlikely(!hlist_empty(&twsk->tcp_option_list)))
+		tcp_extopt_destroy(sk);
 }
 EXPORT_SYMBOL_GPL(tcp_twsk_destructor);
 
@@ -470,6 +483,7 @@ struct sock *tcp_create_openreq_child(const struct sock *sk,
 
 		INIT_LIST_HEAD(&newtp->tsq_node);
 		INIT_LIST_HEAD(&newtp->tsorted_sent_queue);
+		INIT_HLIST_HEAD(&newtp->tcp_option_list);
 
 		tcp_init_wl(newtp, treq->rcv_isn);
 
@@ -545,6 +559,9 @@ struct sock *tcp_create_openreq_child(const struct sock *sk,
 		if (newtp->af_specific->md5_lookup(sk, newsk))
 			newtp->tcp_header_len += TCPOLEN_MD5SIG_ALIGNED;
 #endif
+		if (unlikely(!hlist_empty(&treq->tcp_option_list)))
+			newtp->tcp_header_len += tcp_extopt_add_header(req_to_sk(req), newsk);
+
 		if (skb->len >= TCP_MSS_DEFAULT + newtp->tcp_header_len)
 			newicsk->icsk_ack.last_seg_size = skb->len - newtp->tcp_header_len;
 		newtp->rx_opt.mss_clamp = req->mss;
@@ -587,9 +604,10 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 	bool paws_reject = false;
 	bool own_req;
 
-	tmp_opt.saw_tstamp = 0;
+	tcp_clear_options(&tmp_opt);
 	if (th->doff > (sizeof(struct tcphdr)>>2)) {
-		tcp_parse_options(sock_net(sk), skb, &tmp_opt, 0, NULL);
+		tcp_parse_options(sock_net(sk), skb, &tmp_opt, 0, NULL,
+				  req_to_sk(req));
 
 		if (tmp_opt.saw_tstamp) {
 			tmp_opt.ts_recent = req->ts_recent;
@@ -603,6 +621,10 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 			paws_reject = tcp_paws_reject(&tmp_opt, th->rst);
 		}
 	}
+
+	if (unlikely(!hlist_empty(&tcp_rsk(req)->tcp_option_list)) &&
+	    tcp_extopt_check(req_to_sk(req), skb, &tmp_opt))
+		return NULL;
 
 	/* Check for pure retransmitted SYN. */
 	if (TCP_SKB_CB(skb)->seq == tcp_rsk(req)->rcv_isn &&

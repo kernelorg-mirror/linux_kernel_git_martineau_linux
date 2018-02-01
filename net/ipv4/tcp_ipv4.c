@@ -600,10 +600,9 @@ static void tcp_v4_send_reset(const struct sock *sk, struct sk_buff *skb)
 	const struct tcphdr *th = tcp_hdr(skb);
 	struct {
 		struct tcphdr th;
-#ifdef CONFIG_TCP_MD5SIG
-		__be32 opt[(TCPOLEN_MD5SIG_ALIGNED >> 2)];
-#endif
+		__be32 opt[(MAX_TCP_OPTION_SPACE >> 2)];
 	} rep;
+	struct hlist_head *extopt_list = NULL;
 	struct ip_reply_arg arg;
 #ifdef CONFIG_TCP_MD5SIG
 	struct tcp_md5sig_key *key = NULL;
@@ -613,6 +612,7 @@ static void tcp_v4_send_reset(const struct sock *sk, struct sk_buff *skb)
 	struct sock *sk1 = NULL;
 #endif
 	struct net *net;
+	int offset = 0;
 
 	/* Never send a reset in response to a reset. */
 	if (th->rst)
@@ -623,6 +623,9 @@ static void tcp_v4_send_reset(const struct sock *sk, struct sk_buff *skb)
 	 */
 	if (!sk && skb_rtable(skb)->rt_type != RTN_LOCAL)
 		return;
+
+	if (sk)
+		extopt_list = tcp_extopt_get_list(sk);
 
 	/* Swap the send and the receive. */
 	memset(&rep, 0, sizeof(rep));
@@ -678,19 +681,44 @@ static void tcp_v4_send_reset(const struct sock *sk, struct sk_buff *skb)
 			goto out;
 
 	}
+#endif
 
+	if (unlikely(extopt_list && !hlist_empty(extopt_list))) {
+		unsigned int remaining;
+		struct tcp_out_options opts;
+		int used;
+
+		remaining = sizeof(rep.opt);
+#ifdef CONFIG_TCP_MD5SIG
+		if (key)
+			remaining -= TCPOLEN_MD5SIG_ALIGNED;
+#endif
+
+		memset(&opts, 0, sizeof(opts));
+
+		used = tcp_extopt_response_prepare(skb, TCPHDR_RST, remaining,
+						   &opts, sk);
+
+		arg.iov[0].iov_len += used;
+		rep.th.doff = arg.iov[0].iov_len / 4;
+
+		tcp_extopt_response_write(&rep.opt[0], skb, &rep.th, &opts, sk);
+		offset += used / 4;
+	}
+
+#ifdef CONFIG_TCP_MD5SIG
 	if (key) {
-		rep.opt[0] = htonl((TCPOPT_NOP << 24) |
-				   (TCPOPT_NOP << 16) |
-				   (TCPOPT_MD5SIG << 8) |
-				   TCPOLEN_MD5SIG);
+		rep.opt[offset++] = htonl((TCPOPT_NOP << 24) |
+					  (TCPOPT_NOP << 16) |
+					  (TCPOPT_MD5SIG << 8) |
+					  TCPOLEN_MD5SIG);
 		/* Update length and the length the header thinks exists */
 		arg.iov[0].iov_len += TCPOLEN_MD5SIG_ALIGNED;
 		rep.th.doff = arg.iov[0].iov_len / 4;
 
-		tcp_v4_md5_hash_hdr((__u8 *) &rep.opt[1],
-				     key, ip_hdr(skb)->saddr,
-				     ip_hdr(skb)->daddr, &rep.th);
+		tcp_v4_md5_hash_hdr((__u8 *)&rep.opt[offset],
+				    key, ip_hdr(skb)->saddr,
+				    ip_hdr(skb)->daddr, &rep.th);
 	}
 #endif
 	arg.csum = csum_tcpudp_nofold(ip_hdr(skb)->daddr,
@@ -742,14 +770,14 @@ static void tcp_v4_send_ack(const struct sock *sk,
 	const struct tcphdr *th = tcp_hdr(skb);
 	struct {
 		struct tcphdr th;
-		__be32 opt[(TCPOLEN_TSTAMP_ALIGNED >> 2)
-#ifdef CONFIG_TCP_MD5SIG
-			   + (TCPOLEN_MD5SIG_ALIGNED >> 2)
-#endif
-			];
+		__be32 opt[(MAX_TCP_OPTION_SPACE >> 2)];
 	} rep;
+	struct hlist_head *extopt_list = NULL;
 	struct net *net = sock_net(sk);
 	struct ip_reply_arg arg;
+	int offset = 0;
+
+	extopt_list = tcp_extopt_get_list(sk);
 
 	memset(&rep.th, 0, sizeof(struct tcphdr));
 	memset(&arg, 0, sizeof(arg));
@@ -763,6 +791,7 @@ static void tcp_v4_send_ack(const struct sock *sk,
 		rep.opt[1] = htonl(tsval);
 		rep.opt[2] = htonl(tsecr);
 		arg.iov[0].iov_len += TCPOLEN_TSTAMP_ALIGNED;
+		offset += 3;
 	}
 
 	/* Swap the send and the receive. */
@@ -774,22 +803,45 @@ static void tcp_v4_send_ack(const struct sock *sk,
 	rep.th.ack     = 1;
 	rep.th.window  = htons(win);
 
+	if (unlikely(extopt_list && !hlist_empty(extopt_list))) {
+		unsigned int remaining;
+		struct tcp_out_options opts;
+		int used;
+
+		remaining = sizeof(rep.th) + sizeof(rep.opt) - arg.iov[0].iov_len;
+
+#ifdef CONFIG_TCP_MD5SIG
+		if (key)
+			remaining -= TCPOLEN_MD5SIG_ALIGNED;
+#endif
+
+		memset(&opts, 0, sizeof(opts));
+		used = tcp_extopt_response_prepare(skb, TCPHDR_ACK, remaining,
+						   &opts, sk);
+
+		arg.iov[0].iov_len += used;
+		rep.th.doff = arg.iov[0].iov_len / 4;
+
+		tcp_extopt_response_write(&rep.opt[offset], skb, &rep.th, &opts, sk);
+
+		offset += used / 4;
+	}
+
 #ifdef CONFIG_TCP_MD5SIG
 	if (key) {
-		int offset = (tsecr) ? 3 : 0;
-
 		rep.opt[offset++] = htonl((TCPOPT_NOP << 24) |
 					  (TCPOPT_NOP << 16) |
 					  (TCPOPT_MD5SIG << 8) |
 					  TCPOLEN_MD5SIG);
 		arg.iov[0].iov_len += TCPOLEN_MD5SIG_ALIGNED;
-		rep.th.doff = arg.iov[0].iov_len/4;
+		rep.th.doff = arg.iov[0].iov_len / 4;
 
 		tcp_v4_md5_hash_hdr((__u8 *) &rep.opt[offset],
 				    key, ip_hdr(skb)->saddr,
 				    ip_hdr(skb)->daddr, &rep.th);
 	}
 #endif
+
 	arg.flags = reply_flags;
 	arg.csum = csum_tcpudp_nofold(ip_hdr(skb)->daddr,
 				      ip_hdr(skb)->saddr, /* XXX */
@@ -893,6 +945,9 @@ static int tcp_v4_send_synack(const struct sock *sk, struct dst_entry *dst,
  */
 static void tcp_v4_reqsk_destructor(struct request_sock *req)
 {
+	if (unlikely(!hlist_empty(&tcp_rsk(req)->tcp_option_list)))
+		tcp_extopt_destroy(req_to_sk(req));
+
 	kfree(rcu_dereference_protected(inet_rsk(req)->ireq_opt, 1));
 }
 
@@ -1410,6 +1465,11 @@ struct sock *tcp_v4_syn_recv_sock(const struct sock *sk, struct sk_buff *skb,
 	if (likely(*own_req)) {
 		tcp_move_syn(newtp, req);
 		ireq->ireq_opt = NULL;
+
+		if (unlikely(!hlist_empty(&tcp_rsk(req)->tcp_option_list))) {
+			tcp_extopt_move(req_to_sk(req), newsk);
+			INIT_HLIST_HEAD(&tcp_rsk(req)->tcp_option_list);
+		}
 	} else {
 		newinet->inet_opt = NULL;
 	}
@@ -1907,6 +1967,8 @@ void tcp_v4_destroy_sock(struct sock *sk)
 	/* Cleans up our, hopefully empty, out_of_order_queue. */
 	skb_rbtree_purge(&tp->out_of_order_queue);
 
+	if (unlikely(!hlist_empty(&tp->tcp_option_list)))
+		tcp_extopt_destroy(sk);
 #ifdef CONFIG_TCP_MD5SIG
 	/* Clean up the MD5 key list, if any */
 	if (tp->md5sig_info) {

@@ -313,7 +313,7 @@ struct sock *cookie_v4_check(struct sock *sk, struct sk_buff *skb)
 
 	/* check for timestamp cookie support */
 	memset(&tcp_opt, 0, sizeof(tcp_opt));
-	tcp_parse_options(sock_net(sk), skb, &tcp_opt, 0, NULL);
+	tcp_parse_options(sock_net(sk), skb, &tcp_opt, 0, NULL, sk);
 
 	if (tcp_opt.saw_tstamp && tcp_opt.rcv_tsecr) {
 		tsoff = secure_tcp_ts_off(sock_net(sk),
@@ -323,6 +323,10 @@ struct sock *cookie_v4_check(struct sock *sk, struct sk_buff *skb)
 	}
 
 	if (!cookie_timestamp_decode(sock_net(sk), &tcp_opt))
+		goto out;
+
+	if (unlikely(!hlist_empty(&tp->tcp_option_list)) &&
+	    tcp_extopt_check(sk, skb, &tcp_opt))
 		goto out;
 
 	ret = NULL;

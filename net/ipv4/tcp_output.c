@@ -398,13 +398,6 @@ static inline bool tcp_urg_mode(const struct tcp_sock *tp)
 	return tp->snd_una != tp->snd_up;
 }
 
-#define OPTION_SACK_ADVERTISE	(1 << 0)
-#define OPTION_TS		(1 << 1)
-#define OPTION_MD5		(1 << 2)
-#define OPTION_WSCALE		(1 << 3)
-#define OPTION_FAST_OPEN_COOKIE	(1 << 8)
-#define OPTION_SMC		(1 << 9)
-
 static void smc_options_write(__be32 *ptr, u16 *options)
 {
 #if IS_ENABLED(CONFIG_SMC)
@@ -419,17 +412,6 @@ static void smc_options_write(__be32 *ptr, u16 *options)
 	}
 #endif
 }
-
-struct tcp_out_options {
-	u16 options;		/* bit field of OPTION_* */
-	u16 mss;		/* 0 to disable */
-	u8 ws;			/* window scale, 0 to disable */
-	u8 num_sack_blocks;	/* number of SACK blocks to include */
-	u8 hash_size;		/* bytes in hash_location */
-	__u8 *hash_location;	/* temporary pointer, overloaded */
-	__u32 tsval, tsecr;	/* need to include OPTION_TS */
-	struct tcp_fastopen_cookie *fastopen_cookie;	/* Fast open cookie */
-};
 
 /* Write previously computed TCP options to the packet.
  *
@@ -447,11 +429,14 @@ struct tcp_out_options {
 static void tcp_options_write(__be32 *ptr, struct sk_buff *skb, struct sock *sk,
 			      struct tcp_out_options *opts)
 {
+	struct hlist_head *extopt_list;
 	u16 options = opts->options;	/* mungable copy */
 	struct tcp_sock *tp = NULL;
 
 	if (sk_fullsock(sk))
 		tp = tcp_sk(sk);
+
+	extopt_list = tcp_extopt_get_list(sk);
 
 	if (unlikely(OPTION_MD5 & options)) {
 		*ptr++ = htonl((TCPOPT_NOP << 24) | (TCPOPT_NOP << 16) |
@@ -543,6 +528,9 @@ static void tcp_options_write(__be32 *ptr, struct sk_buff *skb, struct sock *sk,
 	}
 
 	smc_options_write(ptr, &options);
+
+	if (unlikely(!hlist_empty(extopt_list)))
+		tcp_extopt_write(ptr, skb, opts, sk);
 }
 
 static void smc_set_option(const struct tcp_sock *tp,
@@ -645,6 +633,10 @@ static unsigned int tcp_syn_options(struct sock *sk, struct sk_buff *skb,
 
 	smc_set_option(tp, opts, &remaining);
 
+	if (unlikely(!hlist_empty(&tp->tcp_option_list)))
+		remaining -= tcp_extopt_prepare(skb, TCPHDR_SYN, remaining,
+						opts, tcp_to_sk(tp));
+
 	return MAX_TCP_OPTION_SPACE - remaining;
 }
 
@@ -708,6 +700,11 @@ static unsigned int tcp_synack_options(const struct sock *sk,
 
 	smc_set_option_cond(tcp_sk(sk), ireq, opts, &remaining);
 
+	if (unlikely(!hlist_empty(&tcp_rsk(req)->tcp_option_list)))
+		remaining -= tcp_extopt_prepare(skb, TCPHDR_SYN | TCPHDR_ACK,
+						remaining, opts,
+						req_to_sk(req));
+
 	return MAX_TCP_OPTION_SPACE - remaining;
 }
 
@@ -740,6 +737,10 @@ static unsigned int tcp_established_options(struct sock *sk, struct sk_buff *skb
 		opts->tsecr = tp->rx_opt.ts_recent;
 		size += TCPOLEN_TSTAMP_ALIGNED;
 	}
+
+	if (unlikely(!hlist_empty(&tp->tcp_option_list)))
+		size += tcp_extopt_prepare(skb, 0, MAX_TCP_OPTION_SPACE - size,
+					   opts, tcp_to_sk(tp));
 
 	eff_sacks = tp->rx_opt.num_sacks + tp->rx_opt.dsack;
 	if (unlikely(eff_sacks)) {
@@ -3307,6 +3308,9 @@ static void tcp_connect_init(struct sock *sk)
 	if (tp->af_specific->md5_lookup(sk, sk))
 		tp->tcp_header_len += TCPOLEN_MD5SIG_ALIGNED;
 #endif
+
+	if (unlikely(!hlist_empty(&tp->tcp_option_list)))
+		tp->tcp_header_len += tcp_extopt_add_header(sk, sk);
 
 	/* If user gave his TCP_MAXSEG, record it to clamp */
 	if (tp->rx_opt.user_mss)

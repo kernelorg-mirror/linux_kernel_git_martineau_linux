@@ -202,6 +202,7 @@ void tcp_time_wait(struct sock *sk, int state, int timeo);
 #define TCPOLEN_FASTOPEN_BASE  2
 #define TCPOLEN_EXP_FASTOPEN_BASE  4
 #define TCPOLEN_EXP_SMC_BASE   6
+#define TCPOLEN_EXP_BASE       6
 
 /* But this is what stacks really send out. */
 #define TCPOLEN_TSTAMP_ALIGNED		12
@@ -403,7 +404,8 @@ int tcp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int nonblock,
 		int flags, int *addr_len);
 void tcp_parse_options(const struct net *net, const struct sk_buff *skb,
 		       struct tcp_options_received *opt_rx,
-		       int estab, struct tcp_fastopen_cookie *foc);
+		       int estab, struct tcp_fastopen_cookie *foc,
+		       struct sock *sk);
 const u8 *tcp_parse_md5sig_option(const struct tcphdr *th);
 
 /*
@@ -2094,4 +2096,110 @@ static inline bool tcp_bpf_ca_needs_ecn(struct sock *sk)
 #if IS_ENABLED(CONFIG_SMC)
 extern struct static_key_false tcp_have_smc;
 #endif
+
+struct tcp_extopt_store;
+
+struct tcp_extopt_ops {
+	u32			option_kind;
+	unsigned char		priority;
+	void (*parse)(int opsize, const unsigned char *opptr,
+		      const struct sk_buff *skb,
+		      struct tcp_options_received *opt_rx,
+		      struct sock *sk,
+		      struct tcp_extopt_store *store);
+	bool (*check)(struct sock *sk,
+		      const struct sk_buff *skb,
+		      struct tcp_options_received *opt_rx,
+		      struct tcp_extopt_store *store);
+	void (*post_process)(struct sock *sk,
+			     struct tcp_options_received *opt_rx,
+			     struct tcp_extopt_store *store);
+	/* Return the number of bytes consumed */
+	unsigned int (*prepare)(struct sk_buff *skb, u8 flags,
+				unsigned int remaining,
+				struct tcp_out_options *opts,
+				const struct sock *sk,
+				struct tcp_extopt_store *store);
+	__be32 *(*write)(__be32 *ptr, struct sk_buff *skb,
+			 struct tcp_out_options *opts, struct sock *sk,
+			 struct tcp_extopt_store *store);
+	int (*response_prepare)(struct sk_buff *orig, u8 flags,
+				unsigned int remaining,
+				struct tcp_out_options *opts,
+				const struct sock *sk,
+				struct tcp_extopt_store *store);
+	__be32 *(*response_write)(__be32 *ptr, struct sk_buff *orig,
+				  struct tcphdr *th,
+				  struct tcp_out_options *opts,
+				  const struct sock *sk,
+				  struct tcp_extopt_store *store);
+	int (*add_header_len)(const struct sock *orig,
+			      const struct sock *sk,
+			      struct tcp_extopt_store *store);
+	struct tcp_extopt_store *(*copy)(struct sock *listener,
+					 struct request_sock *req,
+					 struct tcp_options_received *opt,
+					 struct tcp_extopt_store *from);
+	struct tcp_extopt_store *(*move)(struct sock *from, struct sock *to,
+					 struct tcp_extopt_store *store);
+	void (*destroy)(struct tcp_extopt_store *store);
+	struct module		*owner;
+};
+
+/* The tcp_extopt_store is the generic structure that will be added to the
+ * list of TCP extra-options.
+ *
+ * Protocols using the framework can create a wrapper structure around it that
+ * stores protocol-specific state. The tcp_extopt-functions will provide
+ * tcp_extopt_store though, so the protocol can use container_of to get
+ * access to the wrapper structure containing the state.
+ */
+struct tcp_extopt_store {
+	struct hlist_node		list;
+	const struct tcp_extopt_ops	*ops;
+};
+
+struct hlist_head *tcp_extopt_get_list(const struct sock *sk);
+
+struct tcp_extopt_store *tcp_extopt_find_kind(u32 kind, const struct sock *sk);
+
+void tcp_extopt_parse(u32 opcode, int opsize, const unsigned char *opptr,
+		      const struct sk_buff *skb,
+		      struct tcp_options_received *opt_rx, struct sock *sk);
+
+bool tcp_extopt_check(struct sock *sk, const struct sk_buff *skb,
+		      struct tcp_options_received *opt_rx);
+
+void tcp_extopt_post_process(struct sock *sk,
+			     struct tcp_options_received *opt_rx);
+
+unsigned int tcp_extopt_prepare(struct sk_buff *skb, u8 flags,
+				unsigned int remaining,
+				struct tcp_out_options *opts,
+				const struct sock *sk);
+
+void tcp_extopt_write(__be32 *ptr, struct sk_buff *skb,
+		      struct tcp_out_options *opts, struct sock *sk);
+
+int tcp_extopt_response_prepare(struct sk_buff *orig, u8 flags,
+				unsigned int remaining,
+				struct tcp_out_options *opts,
+				const struct sock *sk);
+
+void tcp_extopt_response_write(__be32 *ptr, struct sk_buff *orig,
+			       struct tcphdr *th, struct tcp_out_options *opts,
+			       const struct sock *sk);
+
+int tcp_extopt_add_header(const struct sock *orig, const struct sock *sk);
+
+/* Socket lock must be held when calling this function */
+int tcp_register_extopt(struct tcp_extopt_store *store, struct sock *sk);
+
+void tcp_extopt_copy(struct sock *listener, struct request_sock *req,
+		     struct tcp_options_received *opt);
+
+void tcp_extopt_move(struct sock *from, struct sock *to);
+
+void tcp_extopt_destroy(struct sock *sk);
+
 #endif	/* _TCP_H */
