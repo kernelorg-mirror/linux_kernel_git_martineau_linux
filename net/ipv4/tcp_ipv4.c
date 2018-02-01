@@ -764,7 +764,6 @@ out:
 static void tcp_v4_send_ack(const struct sock *sk,
 			    struct sk_buff *skb, u32 seq, u32 ack,
 			    u32 win, u32 tsval, u32 tsecr, int oif,
-			    struct tcp_md5sig_key *key,
 			    int reply_flags, u8 tos)
 {
 	const struct tcphdr *th = tcp_hdr(skb);
@@ -773,6 +772,9 @@ static void tcp_v4_send_ack(const struct sock *sk,
 		__be32 opt[(MAX_TCP_OPTION_SPACE >> 2)];
 	} rep;
 	struct hlist_head *extopt_list = NULL;
+#ifdef CONFIG_TCP_MD5SIG
+	struct tcp_md5sig_key *key;
+#endif
 	struct net *net = sock_net(sk);
 	struct ip_reply_arg arg;
 	int offset = 0;
@@ -802,6 +804,17 @@ static void tcp_v4_send_ack(const struct sock *sk,
 	rep.th.ack_seq = htonl(ack);
 	rep.th.ack     = 1;
 	rep.th.window  = htons(win);
+
+#ifdef CONFIG_TCP_MD5SIG
+	if (sk->sk_state == TCP_TIME_WAIT) {
+		key = tcp_twsk_md5_key(tcp_twsk(sk));
+	} else if (sk->sk_state == TCP_NEW_SYN_RECV) {
+		key = tcp_md5_do_lookup(sk, (union tcp_md5_addr *)&ip_hdr(skb)->saddr,
+					AF_INET);
+	} else {
+		key = NULL;     /* Should not happen */
+	}
+#endif
 
 	if (unlikely(extopt_list && !hlist_empty(extopt_list))) {
 		unsigned int remaining;
@@ -872,7 +885,6 @@ static void tcp_v4_timewait_ack(struct sock *sk, struct sk_buff *skb)
 			tcp_time_stamp_raw() + tcptw->tw_ts_offset,
 			tcptw->tw_ts_recent,
 			tw->tw_bound_dev_if,
-			tcp_twsk_md5_key(tcptw),
 			tw->tw_transparent ? IP_REPLY_ARG_NOSRCCHECK : 0,
 			tw->tw_tos
 			);
@@ -900,8 +912,6 @@ static void tcp_v4_reqsk_send_ack(const struct sock *sk, struct sk_buff *skb,
 			tcp_time_stamp_raw() + tcp_rsk(req)->ts_off,
 			req->ts_recent,
 			0,
-			tcp_md5_do_lookup(sk, (union tcp_md5_addr *)&ip_hdr(skb)->saddr,
-					  AF_INET),
 			inet_rsk(req)->no_srccheck ? IP_REPLY_ARG_NOSRCCHECK : 0,
 			ip_hdr(skb)->tos);
 }
