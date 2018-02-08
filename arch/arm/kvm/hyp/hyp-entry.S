@@ -81,7 +81,6 @@ __kvm_hyp_vector:
 	invalid_vector	hyp_undef	ARM_EXCEPTION_UNDEFINED
 	invalid_vector	hyp_svc		ARM_EXCEPTION_SOFTWARE
 	invalid_vector	hyp_pabt	ARM_EXCEPTION_PREF_ABORT
-	invalid_vector	hyp_dabt	ARM_EXCEPTION_DATA_ABORT
 	invalid_vector	hyp_fiq		ARM_EXCEPTION_FIQ
 
 ENTRY(__hyp_do_panic)
@@ -127,11 +126,29 @@ hyp_hvc:
 	 */
 	pop	{r0, r1, r2}
 
-	/* Check for __hyp_get_vectors */
-	cmp	r0, #-1
-	mrceq	p15, 4, r0, c12, c0, 0	@ get HVBAR
-	beq	1f
+	/*
+	 * Check if we have a kernel function, which is guaranteed to be
+	 * bigger than the maximum hyp stub hypercall
+	 */
+	cmp	r0, #HVC_STUB_HCALL_NR
+	bhs	1f
 
+	/*
+	 * Not a kernel function, treat it as a stub hypercall.
+	 * Compute the physical address for __kvm_handle_stub_hvc
+	 * (as the code lives in the idmaped page) and branch there.
+	 * We hijack ip (r12) as a tmp register.
+	 */
+	push	{r1}
+	ldr	r1, =kimage_voffset
+	ldr	r1, [r1]
+	ldr	ip, =__kvm_handle_stub_hvc
+	sub	ip, ip, r1
+	pop	{r1}
+
+	bx	ip
+
+1:
 	push	{lr}
 
 	mov	lr, r0
@@ -143,7 +160,7 @@ THUMB(	orr	lr, #1)
 	blx	lr			@ Call the HYP function
 
 	pop	{lr}
-1:	eret
+	eret
 
 guest_trap:
 	load_vcpu r0			@ Load VCPU pointer to r0
@@ -163,6 +180,21 @@ hyp_irq:
 	mov	r1, #ARM_EXCEPTION_IRQ
 	load_vcpu r0			@ Load VCPU pointer to r0
 	b	__guest_exit
+
+hyp_dabt:
+	push	{r0, r1}
+	mrs	r0, ELR_hyp
+	ldr	r1, =abort_guest_exit_start
+THUMB(	add	r1, r1, #1)
+	cmp	r0, r1
+	ldrne	r1, =abort_guest_exit_end
+THUMB(	addne	r1, r1, #1)
+	cmpne	r0, r1
+	pop	{r0, r1}
+	bne	__hyp_panic
+
+	orr	r0, r0, #(1 << ARM_EXIT_WITH_ABORT_BIT)
+	eret
 
 	.ltorg
 

@@ -80,6 +80,10 @@
 	};
 };
 
+&cpu0_opp_table {
+	opp-shared;
+};
+
 &dss {
 	reg = <0x58000000 0x80>,
 	      <0x58004054 0x4>,

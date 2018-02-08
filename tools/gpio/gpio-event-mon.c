@@ -1,5 +1,5 @@
 /*
- * gpio-hammer - example swiss army knife to shake GPIO lines on a system
+ * gpio-event-mon - monitor GPIO line events from userspace
  *
  * Copyright (C) 2016 Linus Walleij
  *
@@ -23,6 +23,7 @@
 #include <getopt.h>
 #include <inttypes.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 #include <linux/gpio.h>
 
 int monitor_device(const char *device_name,

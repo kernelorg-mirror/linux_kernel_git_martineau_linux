@@ -21,7 +21,7 @@
    SOFTWARE IS DISCLAIMED.
 */
 
-#include <asm/unaligned.h>
+#include <linux/sched/signal.h>
 
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
@@ -39,6 +39,11 @@ void hci_req_init(struct hci_request *req, struct hci_dev *hdev)
 	skb_queue_head_init(&req->cmd_q);
 	req->hdev = hdev;
 	req->err = 0;
+}
+
+void hci_req_purge(struct hci_request *req)
+{
+	skb_queue_purge(&req->cmd_q);
 }
 
 static int req_run(struct hci_request *req, hci_req_complete_t complete,
@@ -262,6 +267,8 @@ int __hci_req_sync(struct hci_dev *hdev, int (*func)(struct hci_request *req,
 		break;
 	}
 
+	kfree_skb(hdev->req_skb);
+	hdev->req_skb = NULL;
 	hdev->req_status = hdev->req_result = 0;
 
 	BT_DBG("%s end: err %d", hdev->name, err);
@@ -297,12 +304,12 @@ struct sk_buff *hci_prepare_cmd(struct hci_dev *hdev, u16 opcode, u32 plen,
 	if (!skb)
 		return NULL;
 
-	hdr = (struct hci_command_hdr *) skb_put(skb, HCI_COMMAND_HDR_SIZE);
+	hdr = skb_put(skb, HCI_COMMAND_HDR_SIZE);
 	hdr->opcode = cpu_to_le16(opcode);
 	hdr->plen   = plen;
 
 	if (plen)
-		memcpy(skb_put(skb, plen), param, plen);
+		skb_put_data(skb, param, plen);
 
 	BT_DBG("skb len %d", skb->len);
 
@@ -329,8 +336,8 @@ void hci_req_add_ev(struct hci_request *req, u16 opcode, u32 plen,
 
 	skb = hci_prepare_cmd(hdev, opcode, plen, param);
 	if (!skb) {
-		BT_ERR("%s no memory for command (opcode 0x%4.4x)",
-		       hdev->name, opcode);
+		bt_dev_err(hdev, "no memory for command (opcode 0x%4.4x)",
+			   opcode);
 		req->err = -ENOMEM;
 		return;
 	}
@@ -969,48 +976,85 @@ void __hci_req_enable_advertising(struct hci_request *req)
 	hci_req_add(req, HCI_OP_LE_SET_ADV_ENABLE, sizeof(enable), &enable);
 }
 
-static u8 create_default_scan_rsp_data(struct hci_dev *hdev, u8 *ptr)
+u8 append_local_name(struct hci_dev *hdev, u8 *ptr, u8 ad_len)
 {
-	u8 ad_len = 0;
-	size_t name_len;
+	size_t short_len;
+	size_t complete_len;
 
-	name_len = strlen(hdev->dev_name);
-	if (name_len > 0) {
-		size_t max_len = HCI_MAX_AD_LENGTH - ad_len - 2;
+	/* no space left for name (+ NULL + type + len) */
+	if ((HCI_MAX_AD_LENGTH - ad_len) < HCI_MAX_SHORT_NAME_LENGTH + 3)
+		return ad_len;
 
-		if (name_len > max_len) {
-			name_len = max_len;
-			ptr[1] = EIR_NAME_SHORT;
-		} else
-			ptr[1] = EIR_NAME_COMPLETE;
+	/* use complete name if present and fits */
+	complete_len = strlen(hdev->dev_name);
+	if (complete_len && complete_len <= HCI_MAX_SHORT_NAME_LENGTH)
+		return eir_append_data(ptr, ad_len, EIR_NAME_COMPLETE,
+				       hdev->dev_name, complete_len + 1);
 
-		ptr[0] = name_len + 1;
+	/* use short name if present */
+	short_len = strlen(hdev->short_name);
+	if (short_len)
+		return eir_append_data(ptr, ad_len, EIR_NAME_SHORT,
+				       hdev->short_name, short_len + 1);
 
-		memcpy(ptr + 2, hdev->dev_name, name_len);
+	/* use shortened full name if present, we already know that name
+	 * is longer then HCI_MAX_SHORT_NAME_LENGTH
+	 */
+	if (complete_len) {
+		u8 name[HCI_MAX_SHORT_NAME_LENGTH + 1];
 
-		ad_len += (name_len + 2);
-		ptr += (name_len + 2);
+		memcpy(name, hdev->dev_name, HCI_MAX_SHORT_NAME_LENGTH);
+		name[HCI_MAX_SHORT_NAME_LENGTH] = '\0';
+
+		return eir_append_data(ptr, ad_len, EIR_NAME_SHORT, name,
+				       sizeof(name));
 	}
 
 	return ad_len;
+}
+
+static u8 append_appearance(struct hci_dev *hdev, u8 *ptr, u8 ad_len)
+{
+	return eir_append_le16(ptr, ad_len, EIR_APPEARANCE, hdev->appearance);
+}
+
+static u8 create_default_scan_rsp_data(struct hci_dev *hdev, u8 *ptr)
+{
+	u8 scan_rsp_len = 0;
+
+	if (hdev->appearance) {
+		scan_rsp_len = append_appearance(hdev, ptr, scan_rsp_len);
+	}
+
+	return append_local_name(hdev, ptr, scan_rsp_len);
 }
 
 static u8 create_instance_scan_rsp_data(struct hci_dev *hdev, u8 instance,
 					u8 *ptr)
 {
 	struct adv_info *adv_instance;
+	u32 instance_flags;
+	u8 scan_rsp_len = 0;
 
 	adv_instance = hci_find_adv_instance(hdev, instance);
 	if (!adv_instance)
 		return 0;
 
-	/* TODO: Set the appropriate entries based on advertising instance flags
-	 * here once flags other than 0 are supported.
-	 */
-	memcpy(ptr, adv_instance->scan_rsp_data,
+	instance_flags = adv_instance->flags;
+
+	if ((instance_flags & MGMT_ADV_FLAG_APPEARANCE) && hdev->appearance) {
+		scan_rsp_len = append_appearance(hdev, ptr, scan_rsp_len);
+	}
+
+	memcpy(&ptr[scan_rsp_len], adv_instance->scan_rsp_data,
 	       adv_instance->scan_rsp_len);
 
-	return adv_instance->scan_rsp_len;
+	scan_rsp_len += adv_instance->scan_rsp_len;
+
+	if (instance_flags & MGMT_ADV_FLAG_LOCAL_NAME)
+		scan_rsp_len = append_local_name(hdev, ptr, scan_rsp_len);
+
+	return scan_rsp_len;
 }
 
 void __hci_req_update_scan_rsp_data(struct hci_request *req, u8 instance)
@@ -1192,7 +1236,7 @@ static void adv_timeout_expire(struct work_struct *work)
 
 	hci_req_init(&req, hdev);
 
-	hci_req_clear_adv_instance(hdev, &req, instance, false);
+	hci_req_clear_adv_instance(hdev, NULL, &req, instance, false);
 
 	if (list_empty(&hdev->adv_instances))
 		__hci_req_disable_advertising(&req);
@@ -1282,8 +1326,9 @@ static void cancel_adv_timeout(struct hci_dev *hdev)
  *   setting.
  * - force == false: Only instances that have a timeout will be removed.
  */
-void hci_req_clear_adv_instance(struct hci_dev *hdev, struct hci_request *req,
-				u8 instance, bool force)
+void hci_req_clear_adv_instance(struct hci_dev *hdev, struct sock *sk,
+				struct hci_request *req, u8 instance,
+				bool force)
 {
 	struct adv_info *adv_instance, *n, *next_instance = NULL;
 	int err;
@@ -1309,7 +1354,7 @@ void hci_req_clear_adv_instance(struct hci_dev *hdev, struct hci_request *req,
 			rem_inst = adv_instance->instance;
 			err = hci_remove_adv_instance(hdev, rem_inst);
 			if (!err)
-				mgmt_advertising_removed(NULL, hdev, rem_inst);
+				mgmt_advertising_removed(sk, hdev, rem_inst);
 		}
 	} else {
 		adv_instance = hci_find_adv_instance(hdev, instance);
@@ -1323,7 +1368,7 @@ void hci_req_clear_adv_instance(struct hci_dev *hdev, struct hci_request *req,
 
 			err = hci_remove_adv_instance(hdev, instance);
 			if (!err)
-				mgmt_advertising_removed(NULL, hdev, instance);
+				mgmt_advertising_removed(sk, hdev, instance);
 		}
 	}
 
@@ -1381,7 +1426,7 @@ int hci_update_random_address(struct hci_request *req, bool require_privacy,
 
 		err = smp_generate_rpa(hdev, hdev->irk, &hdev->rpa);
 		if (err < 0) {
-			BT_ERR("%s failed to generate new RPA", hdev->name);
+			bt_dev_err(hdev, "failed to generate new RPA");
 			return err;
 		}
 
@@ -1714,7 +1759,7 @@ void __hci_abort_conn(struct hci_request *req, struct hci_conn *conn,
 			 * function. To be safe hard-code one of the
 			 * values that's suitable for SCO.
 			 */
-			rej.reason = HCI_ERROR_REMOTE_LOW_RESOURCES;
+			rej.reason = HCI_ERROR_REJ_LIMITED_RESOURCES;
 
 			hci_req_add(req, HCI_OP_REJECT_SYNC_CONN_REQ,
 				    sizeof(rej), &rej);
@@ -1743,7 +1788,7 @@ int hci_abort_conn(struct hci_conn *conn, u8 reason)
 
 	err = hci_req_run(&req, abort_conn_complete);
 	if (err && err != -ENODATA) {
-		BT_ERR("Failed to run HCI request: err %d", err);
+		bt_dev_err(conn->hdev, "failed to run HCI request: err %d", err);
 		return err;
 	}
 
@@ -1827,7 +1872,8 @@ static void le_scan_disable_work(struct work_struct *work)
 
 	hci_req_sync(hdev, le_scan_disable, 0, HCI_CMD_TIMEOUT, &status);
 	if (status) {
-		BT_ERR("Failed to disable LE scan: status 0x%02x", status);
+		bt_dev_err(hdev, "failed to disable LE scan: status 0x%02x",
+			   status);
 		return;
 	}
 
@@ -1858,7 +1904,7 @@ static void le_scan_disable_work(struct work_struct *work)
 	hci_req_sync(hdev, bredr_inquiry, DISCOV_INTERLEAVED_INQUIRY_LEN,
 		     HCI_CMD_TIMEOUT, &status);
 	if (status) {
-		BT_ERR("Inquiry failed: status 0x%02x", status);
+		bt_dev_err(hdev, "inquiry failed: status 0x%02x", status);
 		goto discov_stopped;
 	}
 
@@ -1900,7 +1946,8 @@ static void le_scan_restart_work(struct work_struct *work)
 
 	hci_req_sync(hdev, le_scan_restart, 0, HCI_CMD_TIMEOUT, &status);
 	if (status) {
-		BT_ERR("Failed to restart LE scan: status %d", status);
+		bt_dev_err(hdev, "failed to restart LE scan: status %d",
+			   status);
 		return;
 	}
 

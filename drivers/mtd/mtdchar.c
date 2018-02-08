@@ -37,7 +37,7 @@
 #include <linux/mtd/partitions.h>
 #include <linux/mtd/map.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include "mtdcore.h"
 
@@ -375,12 +375,7 @@ static int mtdchar_writeoob(struct file *file, struct mtd_info *mtd,
 		return -EINVAL;
 
 	if (!mtd->_write_oob)
-		ret = -EOPNOTSUPP;
-	else
-		ret = access_ok(VERIFY_READ, ptr, length) ? 0 : -EFAULT;
-
-	if (ret)
-		return ret;
+		return -EOPNOTSUPP;
 
 	ops.ooblen = length;
 	ops.ooboffs = start & (mtd->writesize - 1);
@@ -419,9 +414,6 @@ static int mtdchar_readoob(struct file *file, struct mtd_info *mtd,
 	if (length > 4096)
 		return -EINVAL;
 
-	if (!access_ok(VERIFY_WRITE, ptr, length))
-		return -EFAULT;
-
 	ops.ooblen = length;
 	ops.ooboffs = start & (mtd->writesize - 1);
 	ops.datbuf = NULL;
@@ -451,7 +443,7 @@ static int mtdchar_readoob(struct file *file, struct mtd_info *mtd,
 	 * data. For our userspace tools it is important to dump areas
 	 * with ECC errors!
 	 * For kernel internal usage it also might return -EUCLEAN
-	 * to signal the caller that a bitflip has occured and has
+	 * to signal the caller that a bitflip has occurred and has
 	 * been corrected by the ECC algorithm.
 	 *
 	 * Note: currently the standard NAND function, nand_read_oob_std,
@@ -618,9 +610,6 @@ static int mtdchar_write_ioctl(struct mtd_info *mtd,
 
 	usr_data = (const void __user *)(uintptr_t)req.usr_data;
 	usr_oob = (const void __user *)(uintptr_t)req.usr_oob;
-	if (!access_ok(VERIFY_READ, usr_data, req.len) ||
-	    !access_ok(VERIFY_READ, usr_oob, req.ooblen))
-		return -EFAULT;
 
 	if (!mtd->_write_oob)
 		return -EOPNOTSUPP;
@@ -662,20 +651,9 @@ static int mtdchar_ioctl(struct file *file, u_int cmd, u_long arg)
 	struct mtd_info *mtd = mfi->mtd;
 	void __user *argp = (void __user *)arg;
 	int ret = 0;
-	u_long size;
 	struct mtd_info_user info;
 
 	pr_debug("MTD_ioctl\n");
-
-	size = (cmd & IOCSIZE_MASK) >> IOCSIZE_SHIFT;
-	if (cmd & IOC_IN) {
-		if (!access_ok(VERIFY_READ, argp, size))
-			return -EFAULT;
-	}
-	if (cmd & IOC_OUT) {
-		if (!access_ok(VERIFY_WRITE, argp, size))
-			return -EFAULT;
-	}
 
 	switch (cmd) {
 	case MEMGETREGIONCOUNT:

@@ -343,7 +343,7 @@ static struct attribute *apds9960_attributes[] = {
 	NULL,
 };
 
-static struct attribute_group apds9960_attribute_group = {
+static const struct attribute_group apds9960_attribute_group = {
 	.attrs = apds9960_attributes,
 };
 
@@ -744,7 +744,6 @@ static int apds9960_write_event_config(struct iio_dev *indio_dev,
 }
 
 static const struct iio_info apds9960_info = {
-	.driver_module = THIS_MODULE,
 	.attrs = &apds9960_attribute_group,
 	.read_raw = apds9960_read_raw,
 	.write_raw = apds9960_write_raw,
@@ -1112,6 +1111,8 @@ static int apds9960_runtime_resume(struct device *dev)
 #endif
 
 static const struct dev_pm_ops apds9960_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+				pm_runtime_force_resume)
 	SET_RUNTIME_PM_OPS(apds9960_runtime_suspend,
 			   apds9960_runtime_resume, NULL)
 };
@@ -1122,9 +1123,16 @@ static const struct i2c_device_id apds9960_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, apds9960_id);
 
+static const struct of_device_id apds9960_of_match[] = {
+	{ .compatible = "avago,apds9960" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, apds9960_of_match);
+
 static struct i2c_driver apds9960_driver = {
 	.driver = {
 		.name	= APDS9960_DRV_NAME,
+		.of_match_table = apds9960_of_match,
 		.pm	= &apds9960_pm_ops,
 	},
 	.probe		= apds9960_probe,

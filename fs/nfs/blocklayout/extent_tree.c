@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2014-2016 Christoph Hellwig.
  */
@@ -402,7 +403,7 @@ ext_tree_split(struct rb_root *root, struct pnfs_block_extent *be,
 
 int
 ext_tree_mark_written(struct pnfs_block_layout *bl, sector_t start,
-		sector_t len)
+		sector_t len, u64 lwb)
 {
 	struct rb_root *root = &bl->bl_ext_rw;
 	sector_t end = start + len;
@@ -471,6 +472,8 @@ ext_tree_mark_written(struct pnfs_block_layout *bl, sector_t start,
 		}
 	}
 out:
+	if (bl->bl_lwb < lwb)
+		bl->bl_lwb = lwb;
 	spin_unlock(&bl->bl_ext_lock);
 
 	__ext_put_deviceids(&tmp);
@@ -518,7 +521,7 @@ static __be32 *encode_scsi_range(struct pnfs_block_extent *be, __be32 *p)
 }
 
 static int ext_tree_encode_commit(struct pnfs_block_layout *bl, __be32 *p,
-		size_t buffer_size, size_t *count)
+		size_t buffer_size, size_t *count, __u64 *lastbyte)
 {
 	struct pnfs_block_extent *be;
 	int ret = 0;
@@ -542,6 +545,8 @@ static int ext_tree_encode_commit(struct pnfs_block_layout *bl, __be32 *p,
 			p = encode_block_extent(be, p);
 		be->be_tag = EXTENT_COMMITTING;
 	}
+	*lastbyte = bl->bl_lwb - 1;
+	bl->bl_lwb = 0;
 	spin_unlock(&bl->bl_ext_lock);
 
 	return ret;
@@ -564,7 +569,7 @@ ext_tree_prepare_commit(struct nfs4_layoutcommit_args *arg)
 	arg->layoutupdate_pages = &arg->layoutupdate_page;
 
 retry:
-	ret = ext_tree_encode_commit(bl, start_p + 1, buffer_size, &count);
+	ret = ext_tree_encode_commit(bl, start_p + 1, buffer_size, &count, &arg->lastbytewritten);
 	if (unlikely(ret)) {
 		ext_tree_free_commitdata(arg, buffer_size);
 

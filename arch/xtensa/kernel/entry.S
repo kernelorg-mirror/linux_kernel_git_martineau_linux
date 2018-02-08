@@ -17,7 +17,7 @@
 #include <asm/processor.h>
 #include <asm/coprocessor.h>
 #include <asm/thread_info.h>
-#include <asm/uaccess.h>
+#include <asm/asm-uaccess.h>
 #include <asm/unistd.h>
 #include <asm/ptrace.h>
 #include <asm/current.h>
@@ -1632,10 +1632,11 @@ ENTRY(fast_second_level_miss)
 	 * The messy computation for 'pteval' above really simplifies
 	 * into the following:
 	 *
-	 * pteval = ((pmdval - PAGE_OFFSET) & PAGE_MASK) | PAGE_DIRECTORY
+	 * pteval = ((pmdval - PAGE_OFFSET + PHYS_OFFSET) & PAGE_MASK)
+	 *                 | PAGE_DIRECTORY
 	 */
 
-	movi	a1, (-PAGE_OFFSET) & 0xffffffff
+	movi	a1, (PHYS_OFFSET - PAGE_OFFSET) & 0xffffffff
 	add	a0, a0, a1		# pmdval - PAGE_OFFSET
 	extui	a1, a0, 0, PAGE_SHIFT	# ... & PAGE_MASK
 	xor	a0, a0, a1
@@ -1898,10 +1899,11 @@ ENTRY(system_call)
 	movi	a4, do_syscall_trace_enter
 	s32i	a3, a2, PT_SYSCALL
 	callx4	a4
+	mov	a3, a6
 
 	/* syscall = sys_call_table[syscall_nr] */
 
-	movi	a4, sys_call_table;
+	movi	a4, sys_call_table
 	movi	a5, __NR_syscall_count
 	movi	a6, -ENOSYS
 	bgeu	a3, a5, 1f

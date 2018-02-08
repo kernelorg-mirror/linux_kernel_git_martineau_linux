@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * u_serial.c - utilities for USB gadget "serial port"/TTY support
  *
@@ -9,10 +10,6 @@
  * Copyright (C) 1999 - 2002 Greg Kroah-Hartman (greg@kroah.com)
  * Copyright (C) 2000 Peter Berger (pberger@brimson.com)
  * Copyright (C) 2000 Al Borchers (alborchers@steinerpoint.com)
- *
- * This software is distributed under the terms of the GNU General
- * Public License ("GPL") as published by the Free Software Foundation,
- * either version 2 of that License or (at your option) any later version.
  */
 
 /* #define VERBOSE_DEBUG */
@@ -375,9 +372,14 @@ __acquires(&port->port_lock)
 */
 {
 	struct list_head	*pool = &port->write_pool;
-	struct usb_ep		*in = port->port_usb->in;
+	struct usb_ep		*in;
 	int			status = 0;
 	bool			do_tty_wake = false;
+
+	if (!port->port_usb)
+		return status;
+
+	in = port->port_usb->in;
 
 	while (!port->write_busy && !list_empty(pool)) {
 		struct usb_request	*req;
@@ -532,7 +534,7 @@ static void gs_rx_push(unsigned long _port)
 		}
 
 		/* push data to (open) tty */
-		if (req->actual) {
+		if (req->actual && tty) {
 			char		*packet = req->buf;
 			unsigned	size = req->actual;
 			unsigned	n;
@@ -617,8 +619,8 @@ static void gs_write_complete(struct usb_ep *ep, struct usb_request *req)
 	switch (req->status) {
 	default:
 		/* presumably a transient fault */
-		pr_warning("%s: unexpected %s status %d\n",
-				__func__, ep->name, req->status);
+		pr_warn("%s: unexpected %s status %d\n",
+			__func__, ep->name, req->status);
 		/* FALL THROUGH */
 	case 0:
 		/* normal completion */
@@ -1073,6 +1075,7 @@ static void gs_complete_out(struct usb_ep *ep, struct usb_request *req)
 	default:
 		pr_warn("%s: unexpected %s status %d\n",
 			__func__, ep->name, req->status);
+		/* fall through */
 	case 0:
 		/* normal completion */
 		spin_lock(&info->con_lock);
@@ -1251,7 +1254,8 @@ static void gserial_console_exit(void)
 	struct gscons_info *info = &gscons_info;
 
 	unregister_console(&gserial_cons);
-	kthread_stop(info->console_thread);
+	if (!IS_ERR_OR_NULL(info->console_thread))
+		kthread_stop(info->console_thread);
 	gs_buf_free(&info->con_buf);
 }
 

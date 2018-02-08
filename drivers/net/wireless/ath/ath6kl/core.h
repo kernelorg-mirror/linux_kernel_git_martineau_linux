@@ -641,7 +641,6 @@ struct ath6kl_vif {
 	u32 txe_intvl;
 	u16 bg_scan_period;
 	u8 assoc_bss_dtim_period;
-	struct net_device_stats net_stats;
 	struct target_stats target_stats;
 	struct wmi_connect_cmd profile;
 	u16 rsn_capab;
@@ -894,7 +893,7 @@ static inline u32 ath6kl_get_hi_item_addr(struct ath6kl *ar,
 
 int ath6kl_configure_target(struct ath6kl *ar);
 void ath6kl_detect_error(unsigned long ptr);
-void disconnect_timer_handler(unsigned long ptr);
+void disconnect_timer_handler(struct timer_list *t);
 void init_netdev(struct net_device *dev);
 void ath6kl_cookie_init(struct ath6kl *ar);
 void ath6kl_cookie_cleanup(struct ath6kl *ar);

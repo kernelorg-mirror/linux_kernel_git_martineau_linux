@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * IBM/3270 Driver - fullscreen driver.
  *
@@ -12,6 +13,7 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/compat.h>
+#include <linux/sched/signal.h>
 #include <linux/module.h>
 #include <linux/list.h>
 #include <linux/slab.h>

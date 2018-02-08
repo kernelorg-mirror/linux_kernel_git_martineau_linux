@@ -22,6 +22,8 @@
 #include <crypto/public_key.h>
 #include <crypto/akcipher.h>
 
+MODULE_DESCRIPTION("In-software asymmetric public-key subtype");
+MODULE_AUTHOR("Red Hat, Inc.");
 MODULE_LICENSE("GPL");
 
 /*
@@ -141,29 +143,13 @@ error_free_tfm:
 	return ret;
 }
 
-struct public_key_completion {
-	struct completion completion;
-	int err;
-};
-
-static void public_key_crypto_done(struct crypto_async_request *req, int err)
-{
-	struct public_key_completion *compl = req->data;
-
-	if (err == -EINPROGRESS)
-		return;
-
-	compl->err = err;
-	complete(&compl->completion);
-}
-
 /*
  * Do encryption, decryption and signing ops.
  */
 static int software_key_eds_op(struct kernel_pkey_params *params,
 			       const void *in, void *out)
 {
-	struct public_key_completion compl;
+	struct crypto_wait cwait;
 	const struct public_key *pkey = params->key->payload.data[asym_crypto];
 	struct akcipher_request *req;
 	struct crypto_akcipher *tfm;
@@ -200,10 +186,10 @@ static int software_key_eds_op(struct kernel_pkey_params *params,
 	sg_init_one(&out_sg, out, params->out_len);
 	akcipher_request_set_crypt(req, &in_sg, &out_sg, params->in_len,
 				   params->out_len);
-	init_completion(&compl.completion);
+	crypto_init_wait(&cwait);
 	akcipher_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG |
 				      CRYPTO_TFM_REQ_MAY_SLEEP,
-				      public_key_crypto_done, &compl);
+				      crypto_req_done, &cwait);
 
 	/* Perform the encryption calculation. */
 	switch (params->op) {
@@ -219,10 +205,7 @@ static int software_key_eds_op(struct kernel_pkey_params *params,
 	default:
 		BUG();
 	}
-	if (ret == -EINPROGRESS) {
-		wait_for_completion(&compl.completion);
-		ret = compl.err;
-	}
+	ret = crypto_wait_req(ret, &cwait);
 
 	if (ret == 0)
 		ret = req->dst_len;
@@ -241,14 +224,14 @@ error_free_tfm:
 int public_key_verify_signature(const struct public_key *pkey,
 				const struct public_key_signature *sig)
 {
-	struct public_key_completion compl;
+	struct crypto_wait cwait;
 	struct crypto_akcipher *tfm;
 	struct akcipher_request *req;
 	struct scatterlist sig_sg, digest_sg;
 	char alg_name[CRYPTO_MAX_ALG_NAME];
 	void *output;
 	unsigned int outlen;
-	int ret = -ENOMEM;
+	int ret;
 
 	pr_devel("==>%s()\n", __func__);
 
@@ -267,6 +250,7 @@ int public_key_verify_signature(const struct public_key *pkey,
 	if (IS_ERR(tfm))
 		return PTR_ERR(tfm);
 
+	ret = -ENOMEM;
 	req = akcipher_request_alloc(tfm, GFP_KERNEL);
 	if (!req)
 		goto error_free_tfm;
@@ -280,6 +264,7 @@ int public_key_verify_signature(const struct public_key *pkey,
 	if (ret)
 		goto error_free_req;
 
+	ret = -ENOMEM;
 	outlen = crypto_akcipher_maxsize(tfm);
 	output = kmalloc(outlen, GFP_KERNEL);
 	if (!output)
@@ -289,21 +274,17 @@ int public_key_verify_signature(const struct public_key *pkey,
 	sg_init_one(&digest_sg, output, outlen);
 	akcipher_request_set_crypt(req, &sig_sg, &digest_sg, sig->s_size,
 				   outlen);
-	init_completion(&compl.completion);
+	crypto_init_wait(&cwait);
 	akcipher_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG |
 				      CRYPTO_TFM_REQ_MAY_SLEEP,
-				      public_key_crypto_done, &compl);
+				      crypto_req_done, &cwait);
 
 	/* Perform the verification calculation.  This doesn't actually do the
 	 * verification, but rather calculates the hash expected by the
 	 * signature and returns that to us.
 	 */
-	ret = crypto_akcipher_verify(req);
-	if (ret == -EINPROGRESS) {
-		wait_for_completion(&compl.completion);
-		ret = compl.err;
-	}
-	if (ret < 0)
+	ret = crypto_wait_req(crypto_akcipher_verify(req), &cwait);
+	if (ret)
 		goto out_free_output;
 
 	/* Do the actual verification step. */
@@ -318,6 +299,8 @@ error_free_req:
 error_free_tfm:
 	crypto_free_akcipher(tfm);
 	pr_devel("<==%s() = %d\n", __func__, ret);
+	if (WARN_ON_ONCE(ret > 0))
+		ret = -EINVAL;
 	return ret;
 }
 EXPORT_SYMBOL_GPL(public_key_verify_signature);

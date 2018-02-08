@@ -194,11 +194,11 @@ static ssize_t write_hw(struct file *file, struct kobject *kobj,
 	int length = min(sizeof(struct atto_ioctl), count);
 
 	if (!a->local_atto_ioctl) {
-		a->local_atto_ioctl = kzalloc(sizeof(struct atto_ioctl),
+		a->local_atto_ioctl = kmalloc(sizeof(struct atto_ioctl),
 					      GFP_KERNEL);
 		if (a->local_atto_ioctl == NULL) {
 			esas2r_log(ESAS2R_LOG_WARN,
-				   "write_hw kzalloc failed for %d bytes",
+				   "write_hw kzalloc failed for %zu bytes",
 				   sizeof(struct atto_ioctl));
 			return -ENOMEM;
 		}
@@ -309,7 +309,7 @@ MODULE_PARM_DESC(interrupt_mode,
 		 "Defines the interrupt mode to use.  0 for legacy"
 		 ", 1 for MSI.  Default is MSI (1).");
 
-static struct pci_device_id
+static const struct pci_device_id
 	esas2r_pci_table[] = {
 	{ ATTO_VENDOR_ID, 0x0049,	  ATTO_VENDOR_ID, 0x0049,
 	  0,
@@ -1186,7 +1186,7 @@ retry:
 		} else {
 			esas2r_log(ESAS2R_LOG_CRIT,
 				   "unable to allocate a request for a "
-				   "device reset (%d:%d)!",
+				   "device reset (%d:%llu)!",
 				   cmd->device->id,
 				   cmd->device->lun);
 		}
@@ -1631,23 +1631,21 @@ void esas2r_adapter_tasklet(unsigned long context)
 	}
 }
 
-static void esas2r_timer_callback(unsigned long context);
+static void esas2r_timer_callback(struct timer_list *t);
 
 void esas2r_kickoff_timer(struct esas2r_adapter *a)
 {
-	init_timer(&a->timer);
+	timer_setup(&a->timer, esas2r_timer_callback, 0);
 
-	a->timer.function = esas2r_timer_callback;
-	a->timer.data = (unsigned long)a;
 	a->timer.expires = jiffies +
 			   msecs_to_jiffies(100);
 
 	add_timer(&a->timer);
 }
 
-static void esas2r_timer_callback(unsigned long context)
+static void esas2r_timer_callback(struct timer_list *t)
 {
-	struct esas2r_adapter *a = (struct esas2r_adapter *)context;
+	struct esas2r_adapter *a = from_timer(a, t, timer);
 
 	set_bit(AF2_TIMER_TICK, &a->flags2);
 

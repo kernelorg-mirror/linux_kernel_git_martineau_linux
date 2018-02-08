@@ -164,7 +164,7 @@ typedef struct { unsigned long pgprot; } pgprot_t;
  */
 static inline unsigned long ___pa(unsigned long x)
 {
-	if (config_enabled(CONFIG_64BIT)) {
+	if (IS_ENABLED(CONFIG_64BIT)) {
 		/*
 		 * For MIPS64 the virtual address may either be in one of
 		 * the compatibility segements ckseg0 or ckseg1, or it may
@@ -173,7 +173,7 @@ static inline unsigned long ___pa(unsigned long x)
 		return x < CKSEG0 ? XPHYSADDR(x) : CPHYSADDR(x);
 	}
 
-	if (!config_enabled(CONFIG_EVA)) {
+	if (!IS_ENABLED(CONFIG_EVA)) {
 		/*
 		 * We're using the standard MIPS32 legacy memory map, ie.
 		 * the address x is going to be in kseg0 or kseg1. We can
@@ -240,8 +240,8 @@ static inline int pfn_valid(unsigned long pfn)
 
 #endif
 
-#define virt_to_page(kaddr)	pfn_to_page(PFN_DOWN(virt_to_phys((void *)     \
-								  (kaddr))))
+#define virt_to_pfn(kaddr)   	PFN_DOWN(virt_to_phys((void *)(kaddr)))
+#define virt_to_page(kaddr)	pfn_to_page(virt_to_pfn(kaddr))
 
 extern int __virt_addr_valid(const volatile void *kaddr);
 #define virt_addr_valid(kaddr)						\

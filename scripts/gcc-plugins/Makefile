@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 GCC_PLUGINS_DIR := $(shell $(CC) -print-file-name=plugin)
 
 ifeq ($(PLUGINCC),$(HOSTCC))
@@ -12,16 +13,26 @@ else
   export HOST_EXTRACXXFLAGS
 endif
 
-export GCCPLUGINS_DIR HOSTLIBS
-
 ifneq ($(CFLAGS_KCOV), $(SANCOV_PLUGIN))
   GCC_PLUGIN := $(filter-out $(SANCOV_PLUGIN), $(GCC_PLUGIN))
 endif
 
-$(HOSTLIBS)-y := $(GCC_PLUGIN)
+export HOSTLIBS
+
+$(obj)/randomize_layout_plugin.o: $(objtree)/$(obj)/randomize_layout_seed.h
+quiet_cmd_create_randomize_layout_seed = GENSEED $@
+cmd_create_randomize_layout_seed = \
+  $(CONFIG_SHELL) $(srctree)/$(src)/gen-random-seed.sh $@ $(objtree)/include/generated/randomize_layout_hash.h
+$(objtree)/$(obj)/randomize_layout_seed.h: FORCE
+	$(call if_changed,create_randomize_layout_seed)
+targets = randomize_layout_seed.h randomize_layout_hash.h
+
+$(HOSTLIBS)-y := $(foreach p,$(GCC_PLUGIN),$(if $(findstring /,$(p)),,$(p)))
 always := $($(HOSTLIBS)-y)
 
-cyc_complexity_plugin-objs := cyc_complexity_plugin.o
-sancov_plugin-objs := sancov_plugin.o
+$(foreach p,$($(HOSTLIBS)-y:%.so=%),$(eval $(p)-objs := $(p).o))
+
+subdir-y := $(GCC_PLUGIN_SUBDIR)
+subdir-  += $(GCC_PLUGIN_SUBDIR)
 
 clean-files += *.so

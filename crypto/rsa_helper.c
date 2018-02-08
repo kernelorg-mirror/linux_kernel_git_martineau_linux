@@ -30,13 +30,13 @@ int rsa_get_n(void *context, size_t hdrlen, unsigned char tag,
 		return -EINVAL;
 
 	if (fips_enabled) {
-		while (!*ptr && n_sz) {
+		while (n_sz && !*ptr) {
 			ptr++;
 			n_sz--;
 		}
 
-		/* In FIPS mode only allow key size 2K & 3K */
-		if (n_sz != 256 && n_sz != 384) {
+		/* In FIPS mode only allow key size 2K and higher */
+		if (n_sz < 256) {
 			pr_err("RSA: key size not allowed in FIPS mode\n");
 			return -EINVAL;
 		}

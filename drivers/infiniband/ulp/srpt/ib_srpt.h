@@ -252,12 +252,14 @@ enum rdma_ch_state {
  * @free_list:     Head of list with free send I/O contexts.
  * @state:         channel state. See also enum rdma_ch_state.
  * @ioctx_ring:    Send ring.
+ * @ioctx_recv_ring: Receive I/O context ring.
  * @list:          Node for insertion in the srpt_device.rch_list list.
  * @cmd_wait_list: List of SCSI commands that arrived before the RTU event. This
  *                 list contains struct srpt_ioctx elements and is protected
  *                 against concurrent modification by the cm_id spinlock.
  * @sess:          Session information associated with this SRP channel.
  * @sess_name:     Session name.
+ * @ini_guid:      Initiator port GUID.
  * @release_work:  Allows scheduling of srpt_release_channel().
  * @release_done:  Enables waiting for srpt_release_channel() completion.
  */
@@ -280,10 +282,12 @@ struct srpt_rdma_ch {
 	struct list_head	free_list;
 	enum rdma_ch_state	state;
 	struct srpt_send_ioctx	**ioctx_ring;
+	struct srpt_recv_ioctx	**ioctx_recv_ring;
 	struct list_head	list;
 	struct list_head	cmd_wait_list;
 	struct se_session	*sess;
 	u8			sess_name[36];
+	u8			ini_guid[24];
 	struct work_struct	release_work;
 	struct completion	*release_done;
 };
@@ -293,11 +297,13 @@ struct srpt_rdma_ch {
  * @srp_max_rdma_size: Maximum size of SRP RDMA transfers for new connections.
  * @srp_max_rsp_size: Maximum size of SRP response messages in bytes.
  * @srp_sq_size: Shared receive queue (SRQ) size.
+ * @use_srq: Whether or not to use SRQ.
  */
 struct srpt_port_attrib {
 	u32			srp_max_rdma_size;
 	u32			srp_max_rsp_size;
 	u32			srp_sq_size;
+	bool			use_srq;
 };
 
 /**
@@ -306,28 +312,34 @@ struct srpt_port_attrib {
  * @mad_agent: per-port management datagram processing information.
  * @enabled:   Whether or not this target port is enabled.
  * @port_guid: ASCII representation of Port GUID
+ * @port_gid:  ASCII representation of Port GID
  * @port:      one-based port number.
  * @sm_lid:    cached value of the port's sm_lid.
  * @lid:       cached value of the port's lid.
  * @gid:       cached value of the port's gid.
  * @port_acl_lock spinlock for port_acl_list:
  * @work:      work structure for refreshing the aforementioned cached values.
- * @port_tpg_1 Target portal group = 1 data.
- * @port_wwn:  Target core WWN data.
+ * @port_guid_tpg: TPG associated with target port GUID.
+ * @port_guid_wwn: WWN associated with target port GUID.
+ * @port_gid_tpg:  TPG associated with target port GID.
+ * @port_gid_wwn:  WWN associated with target port GID.
  * @port_acl_list: Head of the list with all node ACLs for this port.
  */
 struct srpt_port {
 	struct srpt_device	*sdev;
 	struct ib_mad_agent	*mad_agent;
 	bool			enabled;
-	u8			port_guid[64];
+	u8			port_guid[24];
+	u8			port_gid[64];
 	u8			port;
-	u16			sm_lid;
-	u16			lid;
+	u32			sm_lid;
+	u32			lid;
 	union ib_gid		gid;
 	struct work_struct	work;
-	struct se_portal_group	port_tpg_1;
-	struct se_wwn		port_wwn;
+	struct se_portal_group	port_guid_tpg;
+	struct se_wwn		port_guid_wwn;
+	struct se_portal_group	port_gid_tpg;
+	struct se_wwn		port_gid_wwn;
 	struct srpt_port_attrib port_attrib;
 };
 
@@ -335,10 +347,11 @@ struct srpt_port {
  * struct srpt_device - Information associated by SRPT with a single HCA.
  * @device:        Backpointer to the struct ib_device managed by the IB core.
  * @pd:            IB protection domain.
- * @mr:            L_Key (local key) with write access to all local memory.
+ * @lkey:          L_Key (local key) with write access to all local memory.
  * @srq:           Per-HCA SRQ (shared receive queue).
  * @cm_id:         Connection identifier.
  * @srq_size:      SRQ size.
+ * @use_srq:       Whether or not to use SRQ.
  * @ioctx_ring:    Per-HCA SRQ.
  * @rch_list:      Per-device channel list -- see also srpt_rdma_ch.list.
  * @ch_releaseQ:   Enables waiting for removal from rch_list.
@@ -350,9 +363,11 @@ struct srpt_port {
 struct srpt_device {
 	struct ib_device	*device;
 	struct ib_pd		*pd;
+	u32			lkey;
 	struct ib_srq		*srq;
 	struct ib_cm_id		*cm_id;
 	int			srq_size;
+	bool			use_srq;
 	struct srpt_recv_ioctx	**ioctx_ring;
 	struct list_head	rch_list;
 	wait_queue_head_t	ch_releaseQ;

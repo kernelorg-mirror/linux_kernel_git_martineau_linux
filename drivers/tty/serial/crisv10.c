@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Serial port driver for the ETRAX 100LX chip
  *
@@ -12,7 +13,7 @@ static char *serial_version = "$Revision: 1.25 $";
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <linux/signal.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/timer.h>
 #include <linux/interrupt.h>
 #include <linux/tty.h>
@@ -28,7 +29,6 @@ static char *serial_version = "$Revision: 1.25 $";
 #include <linux/bitops.h>
 #include <linux/seq_file.h>
 #include <linux/delay.h>
-#include <linux/module.h>
 #include <linux/uaccess.h>
 #include <linux/io.h>
 
@@ -2059,7 +2059,7 @@ static void flush_timeout_function(unsigned long data)
 static struct timer_list flush_timer;
 
 static void
-timed_flush_handler(unsigned long ptr)
+timed_flush_handler(struct timer_list *unused)
 {
 	struct e100_serial *info;
 	int i;
@@ -3214,8 +3214,6 @@ get_serial_info(struct e100_serial * info,
 	 * should set them to something else than 0.
 	 */
 
-	if (!retinfo)
-		return -EFAULT;
 	memset(&tmp, 0, sizeof(tmp));
 	tmp.type = info->type;
 	tmp.line = info->line;
@@ -4098,7 +4096,7 @@ static void show_serial_version(void)
 	       &serial_version[11]); /* "$Revision: x.yy" */
 }
 
-/* rs_init inits the driver at boot (using the module_init chain) */
+/* rs_init inits the driver at boot (using the initcall chain) */
 
 static const struct tty_operations rs_ops = {
 	.open = rs_open,
@@ -4139,7 +4137,7 @@ static int __init rs_init(void)
 	/* Setup the timed flush handler system */
 
 #if !defined(CONFIG_ETRAX_SERIAL_FAST_TIMER)
-	setup_timer(&flush_timer, timed_flush_handler, 0);
+	timer_setup(&flush_timer, timed_flush_handler, 0);
 	mod_timer(&flush_timer, jiffies + 5);
 #endif
 
@@ -4247,5 +4245,4 @@ static int __init rs_init(void)
 }
 
 /* this makes sure that rs_init is called during kernel boot */
-
-module_init(rs_init);
+device_initcall(rs_init);

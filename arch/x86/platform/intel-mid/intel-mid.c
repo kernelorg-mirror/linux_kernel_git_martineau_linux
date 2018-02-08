@@ -70,6 +70,11 @@ EXPORT_SYMBOL_GPL(__intel_mid_cpu_chip);
 
 static void intel_mid_power_off(void)
 {
+	/* Shut down South Complex via PWRMU */
+	intel_mid_pwr_power_off();
+
+	/* Only for Tangier, the rest will ignore this command */
+	intel_scu_ipc_simple_command(IPCMSG_COLD_OFF, 1);
 };
 
 static void intel_mid_reboot(void)
@@ -156,12 +161,6 @@ out:
 	regulator_has_full_constraints();
 }
 
-/* MID systems don't have i8042 controller */
-static int intel_mid_i8042_detect(void)
-{
-	return 0;
-}
-
 /*
  * Moorestown does not have external NMI source nor port 0x61 to report
  * NMI status. The possible NMI sources are from pmu as a result of NMI
@@ -184,6 +183,7 @@ void __init x86_intel_mid_early_setup(void)
 
 	x86_init.timers.timer_init = intel_mid_time_init;
 	x86_init.timers.setup_percpu_clockev = x86_init_noop;
+	x86_init.timers.wallclock_init = intel_mid_rtc_init;
 
 	x86_init.irqs.pre_vector_init = x86_init_noop;
 
@@ -192,8 +192,6 @@ void __init x86_intel_mid_early_setup(void)
 	x86_cpuinit.setup_percpu_clockev = apbt_setup_secondary_clock;
 
 	x86_platform.calibrate_tsc = intel_mid_calibrate_tsc;
-	x86_platform.i8042_detect = intel_mid_i8042_detect;
-	x86_init.timers.wallclock_init = intel_mid_rtc_init;
 	x86_platform.get_nmi_reason = intel_mid_get_nmi_reason;
 
 	x86_init.pci.init = intel_mid_pci_init;

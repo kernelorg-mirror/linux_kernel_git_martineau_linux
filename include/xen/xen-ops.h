@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef INCLUDE_XEN_OPS_H
 #define INCLUDE_XEN_OPS_H
 
@@ -9,11 +10,13 @@
 
 DECLARE_PER_CPU(struct vcpu_info *, xen_vcpu);
 
-DECLARE_PER_CPU(int, xen_vcpu_id);
-static inline int xen_vcpu_nr(int cpu)
+DECLARE_PER_CPU(uint32_t, xen_vcpu_id);
+static inline uint32_t xen_vcpu_nr(int cpu)
 {
 	return per_cpu(xen_vcpu_id, cpu);
 }
+
+#define XEN_VCPU_ID_INVALID U32_MAX
 
 void xen_arch_pre_suspend(void);
 void xen_arch_post_suspend(int suspend_cancelled);
@@ -22,23 +25,40 @@ void xen_timer_resume(void);
 void xen_arch_resume(void);
 void xen_arch_suspend(void);
 
+void xen_reboot(int reason);
+
 void xen_resume_notifier_register(struct notifier_block *nb);
 void xen_resume_notifier_unregister(struct notifier_block *nb);
 
 bool xen_vcpu_stolen(int vcpu);
 void xen_setup_runstate_info(int cpu);
 void xen_time_setup_guest(void);
+void xen_manage_runstate_time(int action);
 void xen_get_runstate_snapshot(struct vcpu_runstate_info *res);
 u64 xen_steal_clock(int cpu);
 
 int xen_setup_shutdown_event(void);
 
 extern unsigned long *xen_contiguous_bitmap;
+
+#ifdef CONFIG_XEN_PV
 int xen_create_contiguous_region(phys_addr_t pstart, unsigned int order,
 				unsigned int address_bits,
 				dma_addr_t *dma_handle);
 
 void xen_destroy_contiguous_region(phys_addr_t pstart, unsigned int order);
+#else
+static inline int xen_create_contiguous_region(phys_addr_t pstart,
+					       unsigned int order,
+					       unsigned int address_bits,
+					       dma_addr_t *dma_handle)
+{
+	return 0;
+}
+
+static inline void xen_destroy_contiguous_region(phys_addr_t pstart,
+						 unsigned int order) { }
+#endif
 
 struct vm_area_struct;
 
@@ -85,6 +105,8 @@ int xen_remap_domain_gfn_range(struct vm_area_struct *vma,
 			       struct page **pages);
 int xen_unmap_domain_gfn_range(struct vm_area_struct *vma,
 			       int numpgs, struct page **pages);
+
+#ifdef CONFIG_XEN_AUTO_XLATE
 int xen_xlate_remap_gfn_array(struct vm_area_struct *vma,
 			      unsigned long addr,
 			      xen_pfn_t *gfn, int nr,
@@ -93,6 +115,28 @@ int xen_xlate_remap_gfn_array(struct vm_area_struct *vma,
 			      struct page **pages);
 int xen_xlate_unmap_gfn_range(struct vm_area_struct *vma,
 			      int nr, struct page **pages);
+#else
+/*
+ * These two functions are called from arch/x86/xen/mmu.c and so stubs
+ * are needed for a configuration not specifying CONFIG_XEN_AUTO_XLATE.
+ */
+static inline int xen_xlate_remap_gfn_array(struct vm_area_struct *vma,
+					    unsigned long addr,
+					    xen_pfn_t *gfn, int nr,
+					    int *err_ptr, pgprot_t prot,
+					    unsigned int domid,
+					    struct page **pages)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int xen_xlate_unmap_gfn_range(struct vm_area_struct *vma,
+					    int nr, struct page **pages)
+{
+	return -EOPNOTSUPP;
+}
+#endif
+
 int xen_xlate_map_ballooned_pages(xen_pfn_t **pfns, void **vaddr,
 				  unsigned long nr_grant_frames);
 
@@ -120,6 +164,9 @@ efi_status_t xen_efi_update_capsule(efi_capsule_header_t **capsules,
 efi_status_t xen_efi_query_capsule_caps(efi_capsule_header_t **capsules,
 					unsigned long count, u64 *max_size,
 					int *reset_type);
+void xen_efi_reset_system(int reset_type, efi_status_t status,
+			  unsigned long data_size, efi_char16_t *data);
+
 
 #ifdef CONFIG_PREEMPT
 

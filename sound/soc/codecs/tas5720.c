@@ -483,18 +483,20 @@ static const struct snd_soc_dapm_route tas5720_audio_map[] = {
 	{ "OUT", NULL, "DAC" },
 };
 
-static struct snd_soc_codec_driver soc_codec_dev_tas5720 = {
+static const struct snd_soc_codec_driver soc_codec_dev_tas5720 = {
 	.probe = tas5720_codec_probe,
 	.remove = tas5720_codec_remove,
 	.suspend = tas5720_suspend,
 	.resume = tas5720_resume,
 
-	.controls = tas5720_snd_controls,
-	.num_controls = ARRAY_SIZE(tas5720_snd_controls),
-	.dapm_widgets = tas5720_dapm_widgets,
-	.num_dapm_widgets = ARRAY_SIZE(tas5720_dapm_widgets),
-	.dapm_routes = tas5720_audio_map,
-	.num_dapm_routes = ARRAY_SIZE(tas5720_audio_map),
+	.component_driver = {
+		.controls		= tas5720_snd_controls,
+		.num_controls		= ARRAY_SIZE(tas5720_snd_controls),
+		.dapm_widgets		= tas5720_dapm_widgets,
+		.num_dapm_widgets	= ARRAY_SIZE(tas5720_dapm_widgets),
+		.dapm_routes		= tas5720_audio_map,
+		.num_dapm_routes	= ARRAY_SIZE(tas5720_audio_map),
+	},
 };
 
 /* PCM rates supported by the TAS5720 driver */
@@ -505,7 +507,7 @@ static struct snd_soc_codec_driver soc_codec_dev_tas5720 = {
 #define TAS5720_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S18_3LE |\
 			 SNDRV_PCM_FMTBIT_S20_3LE | SNDRV_PCM_FMTBIT_S24_LE)
 
-static struct snd_soc_dai_ops tas5720_speaker_dai_ops = {
+static const struct snd_soc_dai_ops tas5720_speaker_dai_ops = {
 	.hw_params	= tas5720_hw_params,
 	.set_fmt	= tas5720_set_dai_fmt,
 	.set_tdm_slot	= tas5720_set_dai_tdm_slot,

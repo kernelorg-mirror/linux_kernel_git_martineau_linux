@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM ocfs2
 
@@ -1313,8 +1314,6 @@ DEFINE_OCFS2_FILE_OPS(ocfs2_sync_file);
 DEFINE_OCFS2_FILE_OPS(ocfs2_file_aio_write);
 
 DEFINE_OCFS2_FILE_OPS(ocfs2_file_splice_write);
-
-DEFINE_OCFS2_FILE_OPS(ocfs2_file_splice_read);
 
 DEFINE_OCFS2_FILE_OPS(ocfs2_file_aio_read);
 

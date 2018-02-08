@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: ((GPL-2.0 WITH Linux-syscall-note) OR BSD-3-Clause) */
 /*
  * Copyright (c) 2014, Ericsson AB
  * All rights reserved.
@@ -59,6 +60,9 @@ enum {
 	TIPC_NL_MON_SET,
 	TIPC_NL_MON_GET,
 	TIPC_NL_MON_PEER_GET,
+	TIPC_NL_PEER_REMOVE,
+	TIPC_NL_BEARER_ADD,
+	TIPC_NL_UDP_GET_REMOTEIP,
 
 	__TIPC_NL_CMD_MAX,
 	TIPC_NL_CMD_MAX = __TIPC_NL_CMD_MAX - 1
@@ -98,6 +102,7 @@ enum {
 	TIPC_NLA_UDP_UNSPEC,
 	TIPC_NLA_UDP_LOCAL,		/* sockaddr_storage */
 	TIPC_NLA_UDP_REMOTE,		/* sockaddr_storage */
+	TIPC_NLA_UDP_MULTI_REMOTEIP,	/* flag */
 
 	__TIPC_NLA_UDP_MAX,
 	TIPC_NLA_UDP_MAX = __TIPC_NLA_UDP_MAX - 1

@@ -16,10 +16,10 @@
  * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "mdp4_kms.h"
+#include <drm/drm_crtc.h>
+#include <drm/drm_crtc_helper.h>
 
-#include "drm_crtc.h"
-#include "drm_crtc_helper.h"
+#include "mdp4_kms.h"
 
 struct mdp4_lcdc_encoder {
 	struct drm_encoder base;
@@ -93,7 +93,7 @@ static const struct drm_encoder_funcs mdp4_lcdc_encoder_funcs = {
 };
 
 /* this should probably be a helper: */
-struct drm_connector *get_connector(struct drm_encoder *encoder)
+static struct drm_connector *get_connector(struct drm_encoder *encoder)
 {
 	struct drm_device *dev = encoder->dev;
 	struct drm_connector *connector;

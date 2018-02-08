@@ -45,14 +45,22 @@ void ttm_bo_free_old_node(struct ttm_buffer_object *bo)
 }
 
 int ttm_bo_move_ttm(struct ttm_buffer_object *bo,
-		    bool evict,
-		    bool no_wait_gpu, struct ttm_mem_reg *new_mem)
+		    bool interruptible, bool no_wait_gpu,
+		    struct ttm_mem_reg *new_mem)
 {
 	struct ttm_tt *ttm = bo->ttm;
 	struct ttm_mem_reg *old_mem = &bo->mem;
 	int ret;
 
 	if (old_mem->mem_type != TTM_PL_SYSTEM) {
+		ret = ttm_bo_wait(bo, interruptible, no_wait_gpu);
+
+		if (unlikely(ret != 0)) {
+			if (ret != -ERESTARTSYS)
+				pr_err("Failed to expire sync object before unbinding TTM\n");
+			return ret;
+		}
+
 		ttm_tt_unbind(ttm);
 		ttm_bo_free_old_node(bo);
 		ttm_flag_masked(&old_mem->placement, TTM_PL_FLAG_SYSTEM,
@@ -321,8 +329,7 @@ static int ttm_copy_ttm_io_page(struct ttm_tt *ttm, void *dst,
 }
 
 int ttm_bo_move_memcpy(struct ttm_buffer_object *bo,
-		       bool evict, bool interruptible,
-		       bool no_wait_gpu,
+		       bool interruptible, bool no_wait_gpu,
 		       struct ttm_mem_reg *new_mem)
 {
 	struct ttm_bo_device *bdev = bo->bdev;
@@ -462,10 +469,12 @@ static int ttm_buffer_object_transfer(struct ttm_buffer_object *bo,
 	 * TODO: Explicit member copy would probably be better here.
 	 */
 
+	atomic_inc(&bo->glob->bo_count);
 	INIT_LIST_HEAD(&fbo->ddestroy);
 	INIT_LIST_HEAD(&fbo->lru);
 	INIT_LIST_HEAD(&fbo->swap);
 	INIT_LIST_HEAD(&fbo->io_reserve_lru);
+	mutex_init(&fbo->wu_mutex);
 	fbo->moving = NULL;
 	drm_vma_node_reset(&fbo->vma_node);
 	atomic_set(&fbo->cpu_writers, 0);
@@ -579,7 +588,6 @@ int ttm_bo_kmap(struct ttm_buffer_object *bo,
 	unsigned long offset, size;
 	int ret;
 
-	BUG_ON(!list_empty(&bo->swap));
 	map->virtual = NULL;
 	map->bo = bo;
 	if (num_pages > bo->num_pages)
@@ -637,7 +645,7 @@ void ttm_bo_kunmap(struct ttm_bo_kmap_obj *map)
 EXPORT_SYMBOL(ttm_bo_kunmap);
 
 int ttm_bo_move_accel_cleanup(struct ttm_buffer_object *bo,
-			      struct fence *fence,
+			      struct dma_fence *fence,
 			      bool evict,
 			      struct ttm_mem_reg *new_mem)
 {
@@ -667,8 +675,8 @@ int ttm_bo_move_accel_cleanup(struct ttm_buffer_object *bo,
 		 * operation has completed.
 		 */
 
-		fence_put(bo->moving);
-		bo->moving = fence_get(fence);
+		dma_fence_put(bo->moving);
+		bo->moving = dma_fence_get(fence);
 
 		ret = ttm_buffer_object_transfer(bo, &ghost_obj);
 		if (ret)
@@ -699,7 +707,7 @@ int ttm_bo_move_accel_cleanup(struct ttm_buffer_object *bo,
 EXPORT_SYMBOL(ttm_bo_move_accel_cleanup);
 
 int ttm_bo_pipeline_move(struct ttm_buffer_object *bo,
-			 struct fence *fence, bool evict,
+			 struct dma_fence *fence, bool evict,
 			 struct ttm_mem_reg *new_mem)
 {
 	struct ttm_bo_device *bdev = bo->bdev;
@@ -723,8 +731,8 @@ int ttm_bo_pipeline_move(struct ttm_buffer_object *bo,
 		 * operation has completed.
 		 */
 
-		fence_put(bo->moving);
-		bo->moving = fence_get(fence);
+		dma_fence_put(bo->moving);
+		bo->moving = dma_fence_get(fence);
 
 		ret = ttm_buffer_object_transfer(bo, &ghost_obj);
 		if (ret)
@@ -754,16 +762,16 @@ int ttm_bo_pipeline_move(struct ttm_buffer_object *bo,
 		 */
 
 		spin_lock(&from->move_lock);
-		if (!from->move || fence_is_later(fence, from->move)) {
-			fence_put(from->move);
-			from->move = fence_get(fence);
+		if (!from->move || dma_fence_is_later(fence, from->move)) {
+			dma_fence_put(from->move);
+			from->move = dma_fence_get(fence);
 		}
 		spin_unlock(&from->move_lock);
 
 		ttm_bo_free_old_node(bo);
 
-		fence_put(bo->moving);
-		bo->moving = fence_get(fence);
+		dma_fence_put(bo->moving);
+		bo->moving = dma_fence_get(fence);
 
 	} else {
 		/**

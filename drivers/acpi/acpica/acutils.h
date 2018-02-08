@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2017, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -85,6 +85,7 @@ extern const char *acpi_gbl_bpb_decode[];
 extern const char *acpi_gbl_sb_decode[];
 extern const char *acpi_gbl_fc_decode[];
 extern const char *acpi_gbl_pt_decode[];
+extern const char *acpi_gbl_ptyp_decode[];
 #endif
 
 /*
@@ -114,19 +115,36 @@ extern const char *acpi_gbl_pt_decode[];
 /*
  * Common error message prefixes
  */
+#ifndef ACPI_MSG_ERROR
 #define ACPI_MSG_ERROR          "ACPI Error: "
+#endif
+#ifndef ACPI_MSG_EXCEPTION
 #define ACPI_MSG_EXCEPTION      "ACPI Exception: "
+#endif
+#ifndef ACPI_MSG_WARNING
 #define ACPI_MSG_WARNING        "ACPI Warning: "
+#endif
+#ifndef ACPI_MSG_INFO
 #define ACPI_MSG_INFO           "ACPI: "
+#endif
 
+#ifndef ACPI_MSG_BIOS_ERROR
 #define ACPI_MSG_BIOS_ERROR     "ACPI BIOS Error (bug): "
+#endif
+#ifndef ACPI_MSG_BIOS_WARNING
 #define ACPI_MSG_BIOS_WARNING   "ACPI BIOS Warning (bug): "
+#endif
 
 /*
  * Common message suffix
  */
 #define ACPI_MSG_SUFFIX \
 	acpi_os_printf (" (%8.8X/%s-%u)\n", ACPI_CA_VERSION, module_name, line_number)
+
+/* Flags to indicate implicit or explicit string-to-integer conversion */
+
+#define ACPI_IMPLICIT_CONVERSION        TRUE
+#define ACPI_NO_IMPLICIT_CONVERSION     FALSE
 
 /* Types for Resource descriptor entries */
 
@@ -184,14 +202,31 @@ void acpi_ut_strlwr(char *src_string);
 
 int acpi_ut_stricmp(char *string1, char *string2);
 
-acpi_status
-acpi_ut_strtoul64(char *string,
-		  u32 base, u32 max_integer_byte_width, u64 *ret_integer);
+/*
+ * utstrsuppt - string-to-integer conversion support functions
+ */
+acpi_status acpi_ut_convert_octal_string(char *string, u64 *return_value);
 
-/* Values for max_integer_byte_width above */
+acpi_status acpi_ut_convert_decimal_string(char *string, u64 *return_value_ptr);
 
-#define ACPI_MAX32_BYTE_WIDTH       4
-#define ACPI_MAX64_BYTE_WIDTH       8
+acpi_status acpi_ut_convert_hex_string(char *string, u64 *return_value_ptr);
+
+char acpi_ut_remove_whitespace(char **string);
+
+char acpi_ut_remove_leading_zeros(char **string);
+
+u8 acpi_ut_detect_hex_prefix(char **string);
+
+u8 acpi_ut_detect_octal_prefix(char **string);
+
+/*
+ * utstrtoul64 - string-to-integer conversion functions
+ */
+acpi_status acpi_ut_strtoul64(char *string, u64 *ret_integer);
+
+u64 acpi_ut_explicit_strtoul64(char *string);
+
+u64 acpi_ut_implicit_strtoul64(char *string);
 
 /*
  * utglobal - Global data structures and procedures
@@ -219,7 +254,11 @@ const char *acpi_ut_get_region_name(u8 space_id);
 
 const char *acpi_ut_get_event_name(u32 event_id);
 
+const char *acpi_ut_get_argument_type_name(u32 arg_type);
+
 char acpi_ut_hex_to_ascii_char(u64 integer, u32 position);
+
+acpi_status acpi_ut_ascii_to_hex_byte(char *two_ascii_chars, u8 *return_byte);
 
 u8 acpi_ut_ascii_char_to_hex(int hex_char);
 
@@ -316,6 +355,11 @@ void
 acpi_ut_ptr_exit(u32 line_number,
 		 const char *function_name,
 		 const char *module_name, u32 component_id, u8 *ptr);
+
+void
+acpi_ut_str_exit(u32 line_number,
+		 const char *function_name,
+		 const char *module_name, u32 component_id, const char *string);
 
 void
 acpi_ut_debug_dump_buffer(u8 *buffer, u32 count, u32 display, u32 component_id);
@@ -493,7 +537,7 @@ union acpi_generic_state *acpi_ut_create_update_state(union acpi_operand_object
 
 union acpi_generic_state *acpi_ut_create_pkg_state(void *internal_object,
 						   void *external_object,
-						   u16 index);
+						   u32 index);
 
 acpi_status
 acpi_ut_create_update_state_and_push(union acpi_operand_object *object,
@@ -514,6 +558,13 @@ acpi_ut_divide(u64 in_dividend,
 acpi_status
 acpi_ut_short_divide(u64 in_dividend,
 		     u32 divisor, u64 *out_quotient, u32 *out_remainder);
+
+acpi_status
+acpi_ut_short_multiply(u64 in_multiplicand, u32 multiplier, u64 *outproduct);
+
+acpi_status acpi_ut_short_shift_left(u64 operand, u32 count, u64 *out_result);
+
+acpi_status acpi_ut_short_shift_right(u64 operand, u32 count, u64 *out_result);
 
 /*
  * utmisc
@@ -705,25 +756,6 @@ const struct ah_predefined_name *acpi_ah_match_predefined_name(char *nameseg);
 const struct ah_device_id *acpi_ah_match_hardware_id(char *hid);
 
 const char *acpi_ah_match_uuid(u8 *data);
-
-/*
- * utprint - printf/vprintf output functions
- */
-const char *acpi_ut_scan_number(const char *string, u64 *number_ptr);
-
-const char *acpi_ut_print_number(char *string, u64 number);
-
-int
-acpi_ut_vsnprintf(char *string,
-		  acpi_size size, const char *format, va_list args);
-
-int acpi_ut_snprintf(char *string, acpi_size size, const char *format, ...);
-
-#ifdef ACPI_APPLICATION
-int acpi_ut_file_vprintf(ACPI_FILE file, const char *format, va_list args);
-
-int acpi_ut_file_printf(ACPI_FILE file, const char *format, ...);
-#endif
 
 /*
  * utuuid -- UUID support functions

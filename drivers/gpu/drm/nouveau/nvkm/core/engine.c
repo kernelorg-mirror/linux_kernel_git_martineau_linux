@@ -27,6 +27,14 @@
 
 #include <subdev/fb.h>
 
+bool
+nvkm_engine_chsw_load(struct nvkm_engine *engine)
+{
+	if (engine->func->chsw_load)
+		return engine->func->chsw_load(engine);
+	return false;
+}
+
 void
 nvkm_engine_unref(struct nvkm_engine **pengine)
 {
@@ -118,6 +126,15 @@ nvkm_engine_init(struct nvkm_subdev *subdev)
 	return ret;
 }
 
+static int
+nvkm_engine_preinit(struct nvkm_subdev *subdev)
+{
+	struct nvkm_engine *engine = nvkm_engine(subdev);
+	if (engine->func->preinit)
+		engine->func->preinit(engine);
+	return 0;
+}
+
 static void *
 nvkm_engine_dtor(struct nvkm_subdev *subdev)
 {
@@ -130,6 +147,7 @@ nvkm_engine_dtor(struct nvkm_subdev *subdev)
 static const struct nvkm_subdev_func
 nvkm_engine_func = {
 	.dtor = nvkm_engine_dtor,
+	.preinit = nvkm_engine_preinit,
 	.init = nvkm_engine_init,
 	.fini = nvkm_engine_fini,
 	.intr = nvkm_engine_intr,

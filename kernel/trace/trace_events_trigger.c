@@ -22,6 +22,7 @@
 #include <linux/ctype.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
+#include <linux/rculist.h>
 
 #include "trace.h"
 
@@ -1028,6 +1029,7 @@ static struct event_command trigger_traceon_cmd = {
 static struct event_command trigger_traceoff_cmd = {
 	.name			= "traceoff",
 	.trigger_type		= ETT_TRACE_ONOFF,
+	.flags			= EVENT_CMD_FL_POST_TRIGGER,
 	.func			= event_trigger_callback,
 	.reg			= register_trigger,
 	.unreg			= unregister_trigger,
@@ -1121,13 +1123,22 @@ static __init int register_trigger_snapshot_cmd(void) { return 0; }
 #endif /* CONFIG_TRACER_SNAPSHOT */
 
 #ifdef CONFIG_STACKTRACE
-/*
- * Skip 3:
- *   stacktrace_trigger()
+#ifdef CONFIG_UNWINDER_ORC
+/* Skip 2:
  *   event_triggers_post_call()
  *   trace_event_raw_event_xxx()
  */
-#define STACK_SKIP 3
+# define STACK_SKIP 2
+#else
+/*
+ * Skip 4:
+ *   stacktrace_trigger()
+ *   event_triggers_post_call()
+ *   trace_event_buffer_commit()
+ *   trace_event_raw_event_xxx()
+ */
+#define STACK_SKIP 4
+#endif
 
 static void
 stacktrace_trigger(struct event_trigger_data *data, void *rec)

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *    ipl/reipl/dump support for Linux on s390.
  *
@@ -8,7 +9,8 @@
  */
 
 #include <linux/types.h>
-#include <linux/module.h>
+#include <linux/export.h>
+#include <linux/init.h>
 #include <linux/device.h>
 #include <linux/delay.h>
 #include <linux/reboot.h>
@@ -278,8 +280,6 @@ static __init enum ipl_type get_ipl_type(void)
 {
 	struct ipl_parameter_block *ipl = IPL_PARMBLOCK_START;
 
-	if (ipl_flags & IPL_NSS_VALID)
-		return IPL_TYPE_NSS;
 	if (!(ipl_flags & IPL_DEVNO_VALID))
 		return IPL_TYPE_UNKNOWN;
 	if (!(ipl_flags & IPL_PARMBLOCK_VALID))
@@ -532,22 +532,6 @@ static struct attribute_group ipl_ccw_attr_group_lpar = {
 	.attrs = ipl_ccw_attrs_lpar
 };
 
-/* NSS ipl device attributes */
-
-DEFINE_IPL_ATTR_RO(ipl_nss, name, "%s\n", kernel_nss_name);
-
-static struct attribute *ipl_nss_attrs[] = {
-	&sys_ipl_type_attr.attr,
-	&sys_ipl_nss_name_attr.attr,
-	&sys_ipl_ccw_loadparm_attr.attr,
-	&sys_ipl_vm_parm_attr.attr,
-	NULL,
-};
-
-static struct attribute_group ipl_nss_attr_group = {
-	.attrs = ipl_nss_attrs,
-};
-
 /* UNKNOWN ipl device attributes */
 
 static struct attribute *ipl_unknown_attrs[] = {
@@ -596,9 +580,6 @@ static int __init ipl_init(void)
 	case IPL_TYPE_FCP:
 	case IPL_TYPE_FCP_DUMP:
 		rc = sysfs_create_group(&ipl_kset->kobj, &ipl_fcp_attr_group);
-		break;
-	case IPL_TYPE_NSS:
-		rc = sysfs_create_group(&ipl_kset->kobj, &ipl_nss_attr_group);
 		break;
 	default:
 		rc = sysfs_create_group(&ipl_kset->kobj,
@@ -1085,10 +1066,7 @@ static void __reipl_run(void *unused)
 		break;
 	case REIPL_METHOD_CCW_DIAG:
 		diag308(DIAG308_SET, reipl_block_ccw);
-		if (MACHINE_IS_LPAR)
-			diag308(DIAG308_LOAD_NORMAL_DUMP, NULL);
-		else
-			diag308(DIAG308_LOAD_CLEAR, NULL);
+		diag308(DIAG308_LOAD_CLEAR, NULL);
 		break;
 	case REIPL_METHOD_FCP_RW_DIAG:
 		diag308(DIAG308_SET, reipl_block_fcp);
@@ -1174,18 +1152,6 @@ static int __init reipl_nss_init(void)
 		return rc;
 
 	reipl_block_ccw_init(reipl_block_nss);
-	if (ipl_info.type == IPL_TYPE_NSS) {
-		memset(reipl_block_nss->ipl_info.ccw.nss_name,
-			' ', NSS_NAME_SIZE);
-		memcpy(reipl_block_nss->ipl_info.ccw.nss_name,
-			kernel_nss_name, strlen(kernel_nss_name));
-		ASCEBC(reipl_block_nss->ipl_info.ccw.nss_name, NSS_NAME_SIZE);
-		reipl_block_nss->ipl_info.ccw.vm_flags |=
-			DIAG308_VM_FLAGS_NSS_VALID;
-
-		reipl_block_ccw_fill_parms(reipl_block_nss);
-	}
-
 	reipl_capabilities |= IPL_TYPE_NSS;
 	return 0;
 }
@@ -1546,7 +1512,8 @@ static void dump_reipl_run(struct shutdown_trigger *trigger)
 	unsigned long ipib = (unsigned long) reipl_block_actual;
 	unsigned int csum;
 
-	csum = csum_partial(reipl_block_actual, reipl_block_actual->hdr.len, 0);
+	csum = (__force unsigned int)
+	       csum_partial(reipl_block_actual, reipl_block_actual->hdr.len, 0);
 	mem_assign_absolute(S390_lowcore.ipib, ipib);
 	mem_assign_absolute(S390_lowcore.ipib_checksum, csum);
 	dump_run(trigger);
@@ -1863,7 +1830,7 @@ static int __init s390_ipl_init(void)
 {
 	char str[8] = {0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40};
 
-	sclp_get_ipl_info(&sclp_ipl_info);
+	sclp_early_get_ipl_info(&sclp_ipl_info);
 	/*
 	 * Fix loadparm: There are systems where the (SCSI) LOADPARM
 	 * returned by read SCP info is invalid (contains EBCDIC blanks)
@@ -1972,9 +1939,6 @@ void __init setup_ipl(void)
 		ipl_info.data.fcp.lun = IPL_PARMBLOCK_START->ipl_info.fcp.lun;
 		break;
 	case IPL_TYPE_NSS:
-		strncpy(ipl_info.data.nss.name, kernel_nss_name,
-			sizeof(ipl_info.data.nss.name));
-		break;
 	case IPL_TYPE_UNKNOWN:
 		/* We have no info to copy */
 		break;
@@ -1991,10 +1955,9 @@ void __init ipl_update_parameters(void)
 		diag308_set_works = 1;
 }
 
-void __init ipl_save_parameters(void)
+void __init ipl_verify_parameters(void)
 {
 	struct cio_iplinfo iplinfo;
-	void *src, *dst;
 
 	if (cio_get_iplinfo(&iplinfo))
 		return;
@@ -2005,10 +1968,6 @@ void __init ipl_save_parameters(void)
 	if (!iplinfo.is_qdio)
 		return;
 	ipl_flags |= IPL_PARMBLOCK_VALID;
-	src = (void *)(unsigned long)S390_lowcore.ipl_parmblock_ptr;
-	dst = (void *)IPL_PARMBLOCK_ORIGIN;
-	memmove(dst, src, PAGE_SIZE);
-	S390_lowcore.ipl_parmblock_ptr = IPL_PARMBLOCK_ORIGIN;
 }
 
 static LIST_HEAD(rcall);

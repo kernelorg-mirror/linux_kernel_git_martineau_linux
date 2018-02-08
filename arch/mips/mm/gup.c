@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Lockless get_user_pages_fast for MIPS
  *
@@ -287,7 +288,7 @@ slow_irqon:
 	pages += nr;
 
 	ret = get_user_pages_unlocked(start, (end - start) >> PAGE_SHIFT,
-				      write, 0, pages);
+				      pages, write ? FOLL_WRITE : 0);
 
 	/* Have to be a bit careful with return values */
 	if (nr > 0) {

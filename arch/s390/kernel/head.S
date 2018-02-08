@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright IBM Corp. 1999, 2010
  *
@@ -25,7 +26,6 @@
 #include <linux/linkage.h>
 #include <asm/asm-offsets.h>
 #include <asm/thread_info.h>
-#include <asm/facility.h>
 #include <asm/page.h>
 #include <asm/ptrace.h>
 
@@ -303,17 +303,20 @@ ENTRY(startup_kdump)
 	xc	0xe00(256),0xe00
 	xc	0xf00(256),0xf00
 	lctlg	%c0,%c15,0x200(%r0)	# initialize control registers
-	stck	__LC_LAST_UPDATE_CLOCK
+	stcke	__LC_BOOT_CLOCK
+	mvc	__LC_LAST_UPDATE_CLOCK(8),__LC_BOOT_CLOCK+1
 	spt	6f-.LPG0(%r13)
 	mvc	__LC_LAST_UPDATE_TIMER(8),6f-.LPG0(%r13)
 	l	%r15,.Lstack-.LPG0(%r13)
 	ahi	%r15,-STACK_FRAME_OVERHEAD
 	brasl	%r14,verify_facilities
-	/* Continue with startup code in head64.S */
+# For uncompressed images, continue in
+# arch/s390/kernel/head64.S. For compressed images, continue in
+# arch/s390/boot/compressed/head.S.
 	jg	startup_continue
 
 .Lstack:
-	.long	0x8000 + (1<<(PAGE_SHIFT+THREAD_ORDER))
+	.long	0x8000 + (1<<(PAGE_SHIFT+THREAD_SIZE_ORDER))
 	.align	8
 6:	.long	0x7fffffff,0xffffffff
 

@@ -213,8 +213,8 @@ static bool max98926_readable_register(struct device *dev, unsigned int reg)
 	}
 };
 
-DECLARE_TLV_DB_SCALE(max98926_spk_tlv, -600, 100, 0);
-DECLARE_TLV_DB_RANGE(max98926_current_tlv,
+static DECLARE_TLV_DB_SCALE(max98926_spk_tlv, -600, 100, 0);
+static DECLARE_TLV_DB_RANGE(max98926_current_tlv,
 	0, 11, TLV_DB_SCALE_ITEM(20, 20, 0),
 	12, 15, TLV_DB_SCALE_ITEM(320, 40, 0),
 );
@@ -347,7 +347,7 @@ static int max98926_dai_set_fmt(struct snd_soc_dai *codec_dai,
 		max98926_set_sense_data(max98926);
 		break;
 	default:
-		dev_err(codec->dev, "DAI clock mode unsupported");
+		dev_err(codec->dev, "DAI clock mode unsupported\n");
 		return -EINVAL;
 	}
 
@@ -364,7 +364,7 @@ static int max98926_dai_set_fmt(struct snd_soc_dai *codec_dai,
 		invert = MAX98926_DAI_BCI_MASK | MAX98926_DAI_WCI_MASK;
 		break;
 	default:
-		dev_err(codec->dev, "DAI invert mode unsupported");
+		dev_err(codec->dev, "DAI invert mode unsupported\n");
 		return -EINVAL;
 	}
 
@@ -408,7 +408,7 @@ static int max98926_dai_hw_params(struct snd_pcm_substream *substream,
 		max98926->ch_size = 32;
 		break;
 	default:
-		dev_dbg(codec->dev, "format unsupported %d",
+		dev_dbg(codec->dev, "format unsupported %d\n",
 			params_format(params));
 		return -EINVAL;
 	}
@@ -459,7 +459,7 @@ static int max98926_dai_hw_params(struct snd_pcm_substream *substream,
 #define MAX98926_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | \
 		SNDRV_PCM_FMTBIT_S24_LE | SNDRV_PCM_FMTBIT_S32_LE)
 
-static struct snd_soc_dai_ops max98926_dai_ops = {
+static const struct snd_soc_dai_ops max98926_dai_ops = {
 	.set_fmt = max98926_dai_set_fmt,
 	.hw_params = max98926_dai_hw_params,
 };
@@ -496,14 +496,16 @@ static int max98926_probe(struct snd_soc_codec *codec)
 	return 0;
 }
 
-static struct snd_soc_codec_driver soc_codec_dev_max98926 = {
+static const struct snd_soc_codec_driver soc_codec_dev_max98926 = {
 	.probe	= max98926_probe,
-	.controls = max98926_snd_controls,
-	.num_controls = ARRAY_SIZE(max98926_snd_controls),
-	.dapm_routes = max98926_audio_map,
-	.num_dapm_routes = ARRAY_SIZE(max98926_audio_map),
-	.dapm_widgets = max98926_dapm_widgets,
-	.num_dapm_widgets = ARRAY_SIZE(max98926_dapm_widgets),
+	.component_driver = {
+		.controls		= max98926_snd_controls,
+		.num_controls		= ARRAY_SIZE(max98926_snd_controls),
+		.dapm_routes		= max98926_audio_map,
+		.num_dapm_routes	= ARRAY_SIZE(max98926_audio_map),
+		.dapm_widgets		= max98926_dapm_widgets,
+		.num_dapm_widgets	= ARRAY_SIZE(max98926_dapm_widgets),
+	},
 };
 
 static const struct regmap_config max98926_regmap = {

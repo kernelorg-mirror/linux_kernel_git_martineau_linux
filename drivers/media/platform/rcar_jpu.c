@@ -257,7 +257,7 @@ struct jpu_fmt {
 };
 
 /**
- * jpu_q_data - parameters of one queue
+ * struct jpu_q_data - parameters of one queue
  * @fmtinfo: driver-specific format of this queue
  * @format: multiplanar format of this queue
  * @sequence: sequence number
@@ -269,7 +269,7 @@ struct jpu_q_data {
 };
 
 /**
- * jpu_ctx - the device context data
+ * struct jpu_ctx - the device context data
  * @jpu: JPEG IP device for this context
  * @encoder: compression (encode) operation or decompression (decode)
  * @compr_quality: destination image quality in compression (encode) mode
@@ -1183,7 +1183,7 @@ static void jpu_stop_streaming(struct vb2_queue *vq)
 	}
 }
 
-static struct vb2_ops jpu_qops = {
+static const struct vb2_ops jpu_qops = {
 	.queue_setup		= jpu_queue_setup,
 	.buf_prepare		= jpu_buf_prepare,
 	.buf_queue		= jpu_buf_queue,
@@ -1506,7 +1506,7 @@ static void jpu_job_abort(void *priv)
 		jpu_cleanup(ctx, true);
 }
 
-static struct v4l2_m2m_ops jpu_m2m_ops = {
+static const struct v4l2_m2m_ops jpu_m2m_ops = {
 	.device_run	= jpu_device_run,
 	.job_ready	= jpu_job_ready,
 	.job_abort	= jpu_job_abort,

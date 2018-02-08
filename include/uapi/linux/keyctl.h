@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
 /* keyctl.h: keyctl command IDs
  *
  * Copyright (C) 2004, 2008 Red Hat, Inc. All Rights Reserved.
@@ -65,12 +66,20 @@
 #define KEYCTL_PKEY_DECRYPT		26	/* Decrypt a blob using a public key */
 #define KEYCTL_PKEY_SIGN		27	/* Create a public key signature */
 #define KEYCTL_PKEY_VERIFY		28	/* Verify a public key signature */
+#define KEYCTL_RESTRICT_KEYRING		29	/* Restrict keys allowed to link to a keyring */
 
 /* keyctl structures */
 struct keyctl_dh_params {
 	__s32 private;
 	__s32 prime;
 	__s32 base;
+};
+
+struct keyctl_kdf_params {
+	char __user *hashname;
+	char __user *otherinfo;
+	__u32 otherinfolen;
+	__u32 __spare[8];
 };
 
 #define KEYCTL_SUPPORTS_ENCRYPT		0x01

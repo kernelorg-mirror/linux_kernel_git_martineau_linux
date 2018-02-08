@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * GPL HEADER START
  *
@@ -36,12 +37,12 @@
 
 #define DEBUG_SUBSYSTEM S_SEC
 
-#include "../../include/linux/libcfs/libcfs.h"
+#include <linux/libcfs/libcfs.h>
 
-#include "../include/obd_support.h"
-#include "../include/obd_class.h"
-#include "../include/lustre_net.h"
-#include "../include/lustre_sec.h"
+#include <obd_support.h>
+#include <obd_class.h>
+#include <lustre_net.h>
+#include <lustre_sec.h>
 
 #include "ptlrpc_internal.h"
 
@@ -66,12 +67,11 @@ void sptlrpc_gc_add_sec(struct ptlrpc_sec *sec)
 	sec->ps_gc_next = ktime_get_real_seconds() + sec->ps_gc_interval;
 
 	spin_lock(&sec_gc_list_lock);
-	list_add_tail(&sec_gc_list, &sec->ps_gc_list);
+	list_add_tail(&sec->ps_gc_list, &sec_gc_list);
 	spin_unlock(&sec_gc_list_lock);
 
 	CDEBUG(D_SEC, "added sec %p(%s)\n", sec, sec->ps_policy->sp_name);
 }
-EXPORT_SYMBOL(sptlrpc_gc_add_sec);
 
 void sptlrpc_gc_del_sec(struct ptlrpc_sec *sec)
 {
@@ -95,7 +95,6 @@ void sptlrpc_gc_del_sec(struct ptlrpc_sec *sec)
 
 	CDEBUG(D_SEC, "del sec %p(%s)\n", sec, sec->ps_policy->sp_name);
 }
-EXPORT_SYMBOL(sptlrpc_gc_del_sec);
 
 static void sec_process_ctx_list(void)
 {
@@ -182,7 +181,8 @@ again:
 		/* check ctx list again before sleep */
 		sec_process_ctx_list();
 
-		lwi = LWI_TIMEOUT(SEC_GC_INTERVAL * HZ, NULL, NULL);
+		lwi = LWI_TIMEOUT(msecs_to_jiffies(SEC_GC_INTERVAL * MSEC_PER_SEC),
+				  NULL, NULL);
 		l_wait_event(thread->t_ctl_waitq,
 			     thread_is_stopping(thread) ||
 			     thread_is_signal(thread),

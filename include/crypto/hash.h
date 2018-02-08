@@ -75,6 +75,7 @@ struct ahash_request {
  *	  state of the HASH transformation at the beginning. This shall fill in
  *	  the internal structures used during the entire duration of the whole
  *	  transformation. No data processing happens at this point.
+ *	  Note: mandatory.
  * @update: Push a chunk of data into the driver for transformation. This
  *	   function actually pushes blocks of data from upper layers into the
  *	   driver, which then passes those to the hardware as seen fit. This
@@ -84,16 +85,20 @@ struct ahash_request {
  *	   context, as this function may be called in parallel with the same
  *	   transformation object. Data processing can happen synchronously
  *	   [SHASH] or asynchronously [AHASH] at this point.
+ *	   Note: mandatory.
  * @final: Retrieve result from the driver. This function finalizes the
  *	   transformation and retrieves the resulting hash from the driver and
  *	   pushes it back to upper layers. No data processing happens at this
- *	   point.
+ *	   point unless hardware requires it to finish the transformation
+ *	   (then the data buffered by the device driver is processed).
+ *	   Note: mandatory.
  * @finup: Combination of @update and @final. This function is effectively a
  *	   combination of @update and @final calls issued in sequence. As some
  *	   hardware cannot do @update and @final separately, this callback was
  *	   added to allow such hardware to be used at least by IPsec. Data
  *	   processing can happen synchronously [SHASH] or asynchronously [AHASH]
  *	   at this point.
+ *	   Note: optional.
  * @digest: Combination of @init and @update and @final. This function
  *	    effectively behaves as the entire chain of operations, @init,
  *	    @update and @final issued in sequence. Just like @finup, this was
@@ -329,6 +334,16 @@ static inline unsigned int crypto_ahash_digestsize(struct crypto_ahash *tfm)
 	return crypto_hash_alg_common(tfm)->digestsize;
 }
 
+/**
+ * crypto_ahash_statesize() - obtain size of the ahash state
+ * @tfm: cipher handle
+ *
+ * Return the size of the ahash state. With the crypto_ahash_export()
+ * function, the caller can export the state into a buffer whose size is
+ * defined with this function.
+ *
+ * Return: size of the ahash state
+ */
 static inline unsigned int crypto_ahash_statesize(struct crypto_ahash *tfm)
 {
 	return crypto_hash_alg_common(tfm)->statesize;
@@ -369,11 +384,7 @@ static inline struct crypto_ahash *crypto_ahash_reqtfm(
  * crypto_ahash_reqsize() - obtain size of the request data structure
  * @tfm: cipher handle
  *
- * Return the size of the ahash state size. With the crypto_ahash_export
- * function, the caller can export the state into a buffer whose size is
- * defined with this function.
- *
- * Return: size of the ahash state
+ * Return: size of the request data
  */
 static inline unsigned int crypto_ahash_reqsize(struct crypto_ahash *tfm)
 {
@@ -410,11 +421,10 @@ static inline bool crypto_ahash_has_setkey(struct crypto_ahash *tfm)
  *	 needed to perform the cipher operation
  *
  * This function is a "short-hand" for the function calls of
- * crypto_ahash_update and crypto_shash_final. The parameters have the same
+ * crypto_ahash_update and crypto_ahash_final. The parameters have the same
  * meaning as discussed for those separate functions.
  *
- * Return: 0 if the message digest creation was successful; < 0 if an error
- *	   occurred
+ * Return: see crypto_ahash_final()
  */
 int crypto_ahash_finup(struct ahash_request *req);
 
@@ -427,8 +437,11 @@ int crypto_ahash_finup(struct ahash_request *req);
  * based on all data added to the cipher handle. The message digest is placed
  * into the output buffer registered with the ahash_request handle.
  *
- * Return: 0 if the message digest creation was successful; < 0 if an error
- *	   occurred
+ * Return:
+ * 0		if the message digest was successfully calculated;
+ * -EINPROGRESS	if data is feeded into hardware (DMA) or queued for later;
+ * -EBUSY	if queue is full and request should be resubmitted later;
+ * other < 0	if an error occurred
  */
 int crypto_ahash_final(struct ahash_request *req);
 
@@ -441,8 +454,7 @@ int crypto_ahash_final(struct ahash_request *req);
  * crypto_ahash_update and crypto_ahash_final. The parameters have the same
  * meaning as discussed for those separate three functions.
  *
- * Return: 0 if the message digest creation was successful; < 0 if an error
- *	   occurred
+ * Return: see crypto_ahash_final()
  */
 int crypto_ahash_digest(struct ahash_request *req);
 
@@ -453,7 +465,7 @@ int crypto_ahash_digest(struct ahash_request *req);
  *
  * This function exports the hash state of the ahash_request handle into the
  * caller-allocated output buffer out which must have sufficient size (e.g. by
- * calling crypto_ahash_reqsize).
+ * calling crypto_ahash_statesize()).
  *
  * Return: 0 if the export was successful; < 0 if an error occurred
  */
@@ -487,8 +499,7 @@ static inline int crypto_ahash_import(struct ahash_request *req, const void *in)
  * handle. Any potentially existing state created by previous operations is
  * discarded.
  *
- * Return: 0 if the message digest initialization was successful; < 0 if an
- *	   error occurred
+ * Return: see crypto_ahash_final()
  */
 static inline int crypto_ahash_init(struct ahash_request *req)
 {
@@ -504,8 +515,7 @@ static inline int crypto_ahash_init(struct ahash_request *req)
  * is pointed to by the scatter/gather list registered in the &ahash_request
  * handle
  *
- * Return: 0 if the message digest update was successful; < 0 if an error
- *	   occurred
+ * Return: see crypto_ahash_final()
  */
 static inline int crypto_ahash_update(struct ahash_request *req)
 {
@@ -605,7 +615,7 @@ static inline struct ahash_request *ahash_request_cast(
  * the cipher operation completes.
  *
  * The callback function is registered with the &ahash_request handle and
- * must comply with the following template
+ * must comply with the following template::
  *
  *	void callback_function(struct crypto_async_request *req, int error)
  */

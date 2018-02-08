@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <fcntl.h>
 #include <stdio.h>
 #include <errno.h>
@@ -10,8 +11,9 @@
 #include "demangle-rust.h"
 #include "machine.h"
 #include "vdso.h"
-#include <symbol/kallsyms.h>
 #include "debug.h"
+#include "sane_ctype.h"
+#include <symbol/kallsyms.h>
 
 #ifndef EM_AARCH64
 #define EM_AARCH64	183  /* ARM 64 bit */
@@ -206,6 +208,37 @@ Elf_Scn *elf_section_by_name(Elf *elf, GElf_Ehdr *ep,
 	return NULL;
 }
 
+static bool want_demangle(bool is_kernel_sym)
+{
+	return is_kernel_sym ? symbol_conf.demangle_kernel : symbol_conf.demangle;
+}
+
+static char *demangle_sym(struct dso *dso, int kmodule, const char *elf_name)
+{
+	int demangle_flags = verbose > 0 ? (DMGL_PARAMS | DMGL_ANSI) : DMGL_NO_OPTS;
+	char *demangled = NULL;
+
+	/*
+	 * We need to figure out if the object was created from C++ sources
+	 * DWARF DW_compile_unit has this, but we don't always have access
+	 * to it...
+	 */
+	if (!want_demangle(dso->kernel || kmodule))
+	    return demangled;
+
+	demangled = bfd_demangle(NULL, elf_name, demangle_flags);
+	if (demangled == NULL)
+		demangled = java_demangle_sym(elf_name, JAVA_DEMANGLE_NORET);
+	else if (rust_is_mangled(demangled))
+		/*
+		    * Input to Rust demangling is the BFD-demangled
+		    * name which it Rust-demangles in place.
+		    */
+		rust_demangle_sym(demangled);
+
+	return demangled;
+}
+
 #define elf_section__for_each_rel(reldata, pos, pos_mem, idx, nr_entries) \
 	for (idx = 0, pos = gelf_getrel(reldata, 0, &pos_mem); \
 	     idx < nr_entries; \
@@ -223,12 +256,11 @@ Elf_Scn *elf_section_by_name(Elf *elf, GElf_Ehdr *ep,
  * And always look at the original dso, not at debuginfo packages, that
  * have the PLT data stripped out (shdr_rel_plt.sh_type == SHT_NOBITS).
  */
-int dso__synthesize_plt_symbols(struct dso *dso, struct symsrc *ss, struct map *map,
-				symbol_filter_t filter)
+int dso__synthesize_plt_symbols(struct dso *dso, struct symsrc *ss, struct map *map)
 {
 	uint32_t nr_rel_entries, idx;
 	GElf_Sym sym;
-	u64 plt_offset;
+	u64 plt_offset, plt_header_size, plt_entry_size;
 	GElf_Shdr shdr_plt;
 	struct symbol *f;
 	GElf_Shdr shdr_rel_plt, shdr_dynsym;
@@ -295,51 +327,76 @@ int dso__synthesize_plt_symbols(struct dso *dso, struct symsrc *ss, struct map *
 
 	nr_rel_entries = shdr_rel_plt.sh_size / shdr_rel_plt.sh_entsize;
 	plt_offset = shdr_plt.sh_offset;
+	switch (ehdr.e_machine) {
+		case EM_ARM:
+			plt_header_size = 20;
+			plt_entry_size = 12;
+			break;
+
+		case EM_AARCH64:
+			plt_header_size = 32;
+			plt_entry_size = 16;
+			break;
+
+		default: /* FIXME: s390/alpha/mips/parisc/poperpc/sh/sparc/xtensa need to be checked */
+			plt_header_size = shdr_plt.sh_entsize;
+			plt_entry_size = shdr_plt.sh_entsize;
+			break;
+	}
+	plt_offset += plt_header_size;
 
 	if (shdr_rel_plt.sh_type == SHT_RELA) {
 		GElf_Rela pos_mem, *pos;
 
 		elf_section__for_each_rela(reldata, pos, pos_mem, idx,
 					   nr_rel_entries) {
+			const char *elf_name = NULL;
+			char *demangled = NULL;
 			symidx = GELF_R_SYM(pos->r_info);
-			plt_offset += shdr_plt.sh_entsize;
 			gelf_getsym(syms, symidx, &sym);
-			snprintf(sympltname, sizeof(sympltname),
-				 "%s@plt", elf_sym__name(&sym, symstrs));
 
-			f = symbol__new(plt_offset, shdr_plt.sh_entsize,
+			elf_name = elf_sym__name(&sym, symstrs);
+			demangled = demangle_sym(dso, 0, elf_name);
+			if (demangled != NULL)
+				elf_name = demangled;
+			snprintf(sympltname, sizeof(sympltname),
+				 "%s@plt", elf_name);
+			free(demangled);
+
+			f = symbol__new(plt_offset, plt_entry_size,
 					STB_GLOBAL, sympltname);
 			if (!f)
 				goto out_elf_end;
 
-			if (filter && filter(map, f))
-				symbol__delete(f);
-			else {
-				symbols__insert(&dso->symbols[map->type], f);
-				++nr;
-			}
+			plt_offset += plt_entry_size;
+			symbols__insert(&dso->symbols[map->type], f);
+			++nr;
 		}
 	} else if (shdr_rel_plt.sh_type == SHT_REL) {
 		GElf_Rel pos_mem, *pos;
 		elf_section__for_each_rel(reldata, pos, pos_mem, idx,
 					  nr_rel_entries) {
+			const char *elf_name = NULL;
+			char *demangled = NULL;
 			symidx = GELF_R_SYM(pos->r_info);
-			plt_offset += shdr_plt.sh_entsize;
 			gelf_getsym(syms, symidx, &sym);
-			snprintf(sympltname, sizeof(sympltname),
-				 "%s@plt", elf_sym__name(&sym, symstrs));
 
-			f = symbol__new(plt_offset, shdr_plt.sh_entsize,
+			elf_name = elf_sym__name(&sym, symstrs);
+			demangled = demangle_sym(dso, 0, elf_name);
+			if (demangled != NULL)
+				elf_name = demangled;
+			snprintf(sympltname, sizeof(sympltname),
+				 "%s@plt", elf_name);
+			free(demangled);
+
+			f = symbol__new(plt_offset, plt_entry_size,
 					STB_GLOBAL, sympltname);
 			if (!f)
 				goto out_elf_end;
 
-			if (filter && filter(map, f))
-				symbol__delete(f);
-			else {
-				symbols__insert(&dso->symbols[map->type], f);
-				++nr;
-			}
+			plt_offset += plt_entry_size;
+			symbols__insert(&dso->symbols[map->type], f);
+			++nr;
 		}
 	}
 
@@ -350,6 +407,11 @@ out_elf_end:
 	pr_debug("%s: problems reading %s PLT info.\n",
 		 __func__, dso->long_name);
 	return 0;
+}
+
+char *dso__demangle_sym(struct dso *dso, int kmodule, const char *elf_name)
+{
+	return demangle_sym(dso, kmodule, elf_name);
 }
 
 /*
@@ -499,6 +561,12 @@ int sysfs__read_build_id(const char *filename, void *build_id, size_t size)
 				break;
 		} else {
 			int n = namesz + descsz;
+
+			if (n > (int)sizeof(bf)) {
+				n = sizeof(bf);
+				pr_debug("%s: truncating reading of build id in sysfs file %s: n_namesz=%u, n_descsz=%u.\n",
+					 __func__, filename, nhdr.n_namesz, nhdr.n_descsz);
+			}
 			if (read(fd, bf, n) != n)
 				break;
 		}
@@ -587,43 +655,6 @@ static int dso__swap_init(struct dso *dso, unsigned char eidata)
 	return 0;
 }
 
-static int decompress_kmodule(struct dso *dso, const char *name,
-			      enum dso_binary_type type)
-{
-	int fd = -1;
-	char tmpbuf[] = "/tmp/perf-kmod-XXXXXX";
-	struct kmod_path m;
-
-	if (type != DSO_BINARY_TYPE__SYSTEM_PATH_KMODULE_COMP &&
-	    type != DSO_BINARY_TYPE__GUEST_KMODULE_COMP &&
-	    type != DSO_BINARY_TYPE__BUILD_ID_CACHE)
-		return -1;
-
-	if (type == DSO_BINARY_TYPE__BUILD_ID_CACHE)
-		name = dso->long_name;
-
-	if (kmod_path__parse_ext(&m, name) || !m.comp)
-		return -1;
-
-	fd = mkstemp(tmpbuf);
-	if (fd < 0) {
-		dso->load_errno = errno;
-		goto out;
-	}
-
-	if (!decompress_to_file(m.ext, name, fd)) {
-		dso->load_errno = DSO_LOAD_ERRNO__DECOMPRESSION_FAILURE;
-		close(fd);
-		fd = -1;
-	}
-
-	unlink(tmpbuf);
-
-out:
-	free(m.ext);
-	return fd;
-}
-
 bool symsrc__possibly_runtime(struct symsrc *ss)
 {
 	return ss->dynsym || ss->opdsec;
@@ -655,9 +686,11 @@ int symsrc__init(struct symsrc *ss, struct dso *dso, const char *name,
 	int fd;
 
 	if (dso__needs_decompress(dso)) {
-		fd = decompress_kmodule(dso, name, type);
+		fd = dso__decompress_kmodule_fd(dso, name);
 		if (fd < 0)
 			return -1;
+
+		type = dso->symtab_type;
 	} else {
 		fd = open(name, O_RDONLY);
 		if (fd < 0) {
@@ -685,7 +718,7 @@ int symsrc__init(struct symsrc *ss, struct dso *dso, const char *name,
 	}
 
 	/* Always reject images with a mismatched build-id: */
-	if (dso->has_build_id) {
+	if (dso->has_build_id && !symbol_conf.ignore_vmlinux_buildid) {
 		u8 build_id[BUILD_ID_SIZE];
 
 		if (elf_read_build_id(elf, build_id, BUILD_ID_SIZE) < 0) {
@@ -775,17 +808,11 @@ static u64 ref_reloc(struct kmap *kmap)
 	return 0;
 }
 
-static bool want_demangle(bool is_kernel_sym)
-{
-	return is_kernel_sym ? symbol_conf.demangle_kernel : symbol_conf.demangle;
-}
-
 void __weak arch__sym_update(struct symbol *s __maybe_unused,
 		GElf_Sym *sym __maybe_unused) { }
 
-int dso__load_sym(struct dso *dso, struct map *map,
-		  struct symsrc *syms_ss, struct symsrc *runtime_ss,
-		  symbol_filter_t filter, int kmodule)
+int dso__load_sym(struct dso *dso, struct map *map, struct symsrc *syms_ss,
+		  struct symsrc *runtime_ss, int kmodule)
 {
 	struct kmap *kmap = dso->kernel ? map__kmap(map) : NULL;
 	struct map_groups *kmaps = kmap ? map__kmaps(map) : NULL;
@@ -837,7 +864,8 @@ int dso__load_sym(struct dso *dso, struct map *map,
 	sec = syms_ss->symtab;
 	shdr = syms_ss->symshdr;
 
-	if (elf_section_by_name(elf, &ehdr, &tshdr, ".text", NULL))
+	if (elf_section_by_name(runtime_ss->elf, &runtime_ss->ehdr, &tshdr,
+				".text", NULL))
 		dso->text_offset = tshdr.sh_addr - tshdr.sh_offset;
 
 	if (runtime_ss->opdsec)
@@ -1069,29 +1097,10 @@ int dso__load_sym(struct dso *dso, struct map *map,
 			sym.st_value -= shdr.sh_addr - shdr.sh_offset;
 		}
 new_symbol:
-		/*
-		 * We need to figure out if the object was created from C++ sources
-		 * DWARF DW_compile_unit has this, but we don't always have access
-		 * to it...
-		 */
-		if (want_demangle(dso->kernel || kmodule)) {
-			int demangle_flags = DMGL_NO_OPTS;
-			if (verbose)
-				demangle_flags = DMGL_PARAMS | DMGL_ANSI;
+		demangled = demangle_sym(dso, kmodule, elf_name);
+		if (demangled != NULL)
+			elf_name = demangled;
 
-			demangled = bfd_demangle(NULL, elf_name, demangle_flags);
-			if (demangled == NULL)
-				demangled = java_demangle_sym(elf_name, JAVA_DEMANGLE_NORET);
-			else if (rust_is_mangled(demangled))
-				/*
-				 * Input to Rust demangling is the BFD-demangled
-				 * name which it Rust-demangles in place.
-				 */
-				rust_demangle_sym(demangled);
-
-			if (demangled != NULL)
-				elf_name = demangled;
-		}
 		f = symbol__new(sym.st_value, sym.st_size,
 				GELF_ST_BIND(sym.st_info), elf_name);
 		free(demangled);
@@ -1100,21 +1109,16 @@ new_symbol:
 
 		arch__sym_update(f, &sym);
 
-		if (filter && filter(curr_map, f))
-			symbol__delete(f);
-		else {
-			symbols__insert(&curr_dso->symbols[curr_map->type], f);
-			nr++;
-		}
+		__symbols__insert(&curr_dso->symbols[curr_map->type], f, dso->kernel);
+		nr++;
 	}
 
 	/*
 	 * For misannotated, zeroed, ASM function sizes.
 	 */
 	if (nr > 0) {
-		if (!symbol_conf.allow_aliases)
-			symbols__fixup_duplicate(&dso->symbols[map->type]);
 		symbols__fixup_end(&dso->symbols[map->type]);
+		symbols__fixup_duplicate(&dso->symbols[map->type]);
 		if (kmap) {
 			/*
 			 * We need to fixup this here too because we create new
@@ -1456,7 +1460,7 @@ static int kcore_copy__parse_kallsyms(struct kcore_copy_info *kci,
 
 static int kcore_copy__process_modules(void *arg,
 				       const char *name __maybe_unused,
-				       u64 start)
+				       u64 start, u64 size __maybe_unused)
 {
 	struct kcore_copy_info *kci = arg;
 
@@ -1813,7 +1817,7 @@ void kcore_extract__delete(struct kcore_extract *kce)
 static int populate_sdt_note(Elf **elf, const char *data, size_t len,
 			     struct list_head *sdt_notes)
 {
-	const char *provider, *name;
+	const char *provider, *name, *args;
 	struct sdt_note *tmp = NULL;
 	GElf_Ehdr ehdr;
 	GElf_Addr base_off = 0;
@@ -1872,6 +1876,25 @@ static int populate_sdt_note(Elf **elf, const char *data, size_t len,
 		goto out_free_prov;
 	}
 
+	args = memchr(name, '\0', data + len - name);
+
+	/*
+	 * There is no argument if:
+	 * - We reached the end of the note;
+	 * - There is not enough room to hold a potential string;
+	 * - The argument string is empty or just contains ':'.
+	 */
+	if (args == NULL || data + len - args < 2 ||
+		args[1] == ':' || args[1] == '\0')
+		tmp->args = NULL;
+	else {
+		tmp->args = strdup(++args);
+		if (!tmp->args) {
+			ret = -ENOMEM;
+			goto out_free_name;
+		}
+	}
+
 	if (gelf_getclass(*elf) == ELFCLASS32) {
 		memcpy(&tmp->addr, &buf, 3 * sizeof(Elf32_Addr));
 		tmp->bit32 = true;
@@ -1883,7 +1906,7 @@ static int populate_sdt_note(Elf **elf, const char *data, size_t len,
 	if (!gelf_getehdr(*elf, &ehdr)) {
 		pr_debug("%s : cannot get elf header.\n", __func__);
 		ret = -EBADF;
-		goto out_free_name;
+		goto out_free_args;
 	}
 
 	/* Adjust the prelink effect :
@@ -1908,6 +1931,8 @@ static int populate_sdt_note(Elf **elf, const char *data, size_t len,
 	list_add_tail(&tmp->note_list, sdt_notes);
 	return 0;
 
+out_free_args:
+	free(tmp->args);
 out_free_name:
 	free(tmp->name);
 out_free_prov:

@@ -21,6 +21,8 @@
 #include <linux/of_device.h>
 #include <linux/clk.h>
 #include <linux/completion.h>
+#include <linux/delay.h>
+#include <linux/reset.h>
 #include <linux/regulator/consumer.h>
 #include <linux/iio/iio.h>
 
@@ -53,6 +55,7 @@ struct rockchip_saradc {
 	struct clk		*clk;
 	struct completion	completion;
 	struct regulator	*vref;
+	struct reset_control	*reset;
 	const struct rockchip_saradc_data *data;
 	u16			last_val;
 };
@@ -106,7 +109,7 @@ static int rockchip_saradc_read_raw(struct iio_dev *indio_dev,
 
 static irqreturn_t rockchip_saradc_isr(int irq, void *dev_id)
 {
-	struct rockchip_saradc *info = (struct rockchip_saradc *)dev_id;
+	struct rockchip_saradc *info = dev_id;
 
 	/* Read value */
 	info->last_val = readl_relaxed(info->regs + SARADC_DATA);
@@ -122,7 +125,6 @@ static irqreturn_t rockchip_saradc_isr(int irq, void *dev_id)
 
 static const struct iio_info rockchip_saradc_iio_info = {
 	.read_raw = rockchip_saradc_read_raw,
-	.driver_module = THIS_MODULE,
 };
 
 #define ADC_CHANNEL(_index, _id) {				\
@@ -190,6 +192,16 @@ static const struct of_device_id rockchip_saradc_match[] = {
 };
 MODULE_DEVICE_TABLE(of, rockchip_saradc_match);
 
+/**
+ * Reset SARADC Controller.
+ */
+static void rockchip_saradc_reset_controller(struct reset_control *reset)
+{
+	reset_control_assert(reset);
+	usleep_range(10, 20);
+	reset_control_deassert(reset);
+}
+
 static int rockchip_saradc_probe(struct platform_device *pdev)
 {
 	struct rockchip_saradc *info = NULL;
@@ -211,12 +223,32 @@ static int rockchip_saradc_probe(struct platform_device *pdev)
 	info = iio_priv(indio_dev);
 
 	match = of_match_device(rockchip_saradc_match, &pdev->dev);
+	if (!match) {
+		dev_err(&pdev->dev, "failed to match device\n");
+		return -ENODEV;
+	}
+
 	info->data = match->data;
 
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	info->regs = devm_ioremap_resource(&pdev->dev, mem);
 	if (IS_ERR(info->regs))
 		return PTR_ERR(info->regs);
+
+	/*
+	 * The reset should be an optional property, as it should work
+	 * with old devicetrees as well
+	 */
+	info->reset = devm_reset_control_get_exclusive(&pdev->dev,
+						       "saradc-apb");
+	if (IS_ERR(info->reset)) {
+		ret = PTR_ERR(info->reset);
+		if (ret != -ENOENT)
+			return ret;
+
+		dev_dbg(&pdev->dev, "no reset control found\n");
+		info->reset = NULL;
+	}
 
 	init_completion(&info->completion);
 
@@ -251,6 +283,9 @@ static int rockchip_saradc_probe(struct platform_device *pdev)
 			PTR_ERR(info->vref));
 		return PTR_ERR(info->vref);
 	}
+
+	if (info->reset)
+		rockchip_saradc_reset_controller(info->reset);
 
 	/*
 	 * Use a default value for the converter clock.

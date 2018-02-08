@@ -23,6 +23,7 @@
 #include <linux/buffer_head.h>
 #include <linux/slab.h>
 #include <linux/swap.h>
+#include <linux/bio.h>
 
 #include "attrib.h"
 #include "aops.h"
@@ -506,7 +507,7 @@ int ntfs_sync_mft_mirror(ntfs_volume *vol, const unsigned long mft_no,
 	if (unlikely(!page_has_buffers(page))) {
 		struct buffer_head *tail;
 
-		bh = head = alloc_page_buffers(page, blocksize, 1);
+		bh = head = alloc_page_buffers(page, blocksize, true);
 		do {
 			set_buffer_uptodate(bh);
 			tail = bh;
@@ -2692,7 +2693,7 @@ mft_rec_already_initialized:
 
 		/* Set the inode times to the current time. */
 		vi->i_atime = vi->i_mtime = vi->i_ctime =
-			current_fs_time(vi->i_sb);
+			current_time(vi);
 		/*
 		 * Set the file size to 0, the ntfs inode sizes are set to 0 by
 		 * the call to ntfs_init_big_inode() below.

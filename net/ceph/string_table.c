@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/slab.h>
 #include <linux/gfp.h>
 #include <linux/string.h>
@@ -84,12 +85,6 @@ retry:
 }
 EXPORT_SYMBOL(ceph_find_or_create_string);
 
-static void ceph_free_string(struct rcu_head *head)
-{
-	struct ceph_string *cs = container_of(head, struct ceph_string, rcu);
-	kfree(cs);
-}
-
 void ceph_release_string(struct kref *ref)
 {
 	struct ceph_string *cs = container_of(ref, struct ceph_string, kref);
@@ -101,7 +96,7 @@ void ceph_release_string(struct kref *ref)
 	}
 	spin_unlock(&string_tree_lock);
 
-	call_rcu(&cs->rcu, ceph_free_string);
+	kfree_rcu(cs, rcu);
 }
 EXPORT_SYMBOL(ceph_release_string);
 

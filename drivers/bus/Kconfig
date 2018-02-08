@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # Bus Devices
 #
@@ -57,7 +58,7 @@ config ARM_CCN
 
 config BRCMSTB_GISB_ARB
 	bool "Broadcom STB GISB bus arbiter"
-	depends on ARM || MIPS
+	depends on ARM || ARM64 || MIPS
 	default ARCH_BRCMSTB || BMIPS_GENERIC
 	help
 	  Driver for the Broadcom Set Top Box System-on-a-chip internal bus
@@ -108,10 +109,19 @@ config OMAP_OCP2SCP
 	  OCP2SCP and in OMAP5, both USB PHY and SATA PHY is connected via
 	  OCP2SCP.
 
+config QCOM_EBI2
+	bool "Qualcomm External Bus Interface 2 (EBI2)"
+	depends on HAS_IOMEM
+	depends on ARCH_QCOM || COMPILE_TEST
+	default ARCH_QCOM
+	help
+	  Say y here to enable support for the Qualcomm External Bus
+	  Interface 2, which can be used to connect things like NAND Flash,
+	  SRAM, ethernet adapters, FPGAs and LCD displays.
+
 config SIMPLE_PM_BUS
 	bool "Simple Power-Managed Bus Driver"
 	depends on OF && PM
-	depends on ARCH_RENESAS || COMPILE_TEST
 	help
 	  Driver for transparent busses that don't need a real driver, but
 	  where the bus controller is part of a PM domain, or under the control
@@ -123,7 +133,7 @@ config SIMPLE_PM_BUS
 
 config SUNXI_RSB
 	tristate "Allwinner sunXi Reduced Serial Bus Driver"
-	  default MACH_SUN8I || MACH_SUN9I
+	  default MACH_SUN8I || MACH_SUN9I || ARM64
 	  depends on ARCH_SUNXI
 	  select REGMAP
 	  help
@@ -132,18 +142,36 @@ config SUNXI_RSB
 	  with various RSB based devices, such as AXP223, AXP8XX PMICs,
 	  and AC100/AC200 ICs.
 
-# TODO: This uses pm_clk_*() symbols that aren't exported in v4.7 and hence
-# the driver will fail to build as a module. However there are patches to
-# address that queued for v4.8, so this can be turned into a tristate symbol
-# after v4.8-rc1.
 config TEGRA_ACONNECT
-	bool "Tegra ACONNECT Bus Driver"
+	tristate "Tegra ACONNECT Bus Driver"
 	depends on ARCH_TEGRA_210_SOC
 	depends on OF && PM
 	select PM_CLK
 	help
 	  Driver for the Tegra ACONNECT bus which is used to interface with
 	  the devices inside the Audio Processing Engine (APE) for Tegra210.
+
+config TEGRA_GMI
+	tristate "Tegra Generic Memory Interface bus driver"
+	depends on ARCH_TEGRA
+	help
+	  Driver for the Tegra Generic Memory Interface bus which can be used
+	  to attach devices such as NOR, UART, FPGA and more.
+
+config TI_SYSC
+	bool "TI sysc interconnect target module driver"
+	depends on ARCH_OMAP2PLUS
+	help
+	  Generic driver for Texas Instruments interconnect target module
+	  found on many TI SoCs.
+
+config TS_NBUS
+	tristate "Technologic Systems NBUS Driver"
+	depends on SOC_IMX28
+	depends on OF_GPIO && PWM
+	help
+	  Driver for the Technologic Systems NBUS which is used to interface
+	  with the peripherals in the FPGA of the TS-4600 SoM.
 
 config UNIPHIER_SYSTEM_BUS
 	tristate "UniPhier System Bus driver"
@@ -162,4 +190,13 @@ config VEXPRESS_CONFIG
 	help
 	  Platform configuration infrastructure for the ARM Ltd.
 	  Versatile Express.
+
+config DA8XX_MSTPRI
+	bool "TI da8xx master peripheral priority driver"
+	depends on ARCH_DAVINCI_DA8XX
+	help
+	  Driver for Texas Instruments da8xx master peripheral priority
+	  configuration. Allows to adjust the priorities of all master
+	  peripherals.
+
 endmenu

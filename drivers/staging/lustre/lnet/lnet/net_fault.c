@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * GPL HEADER START
  *
@@ -35,8 +36,8 @@
 
 #define DEBUG_SUBSYSTEM S_LNET
 
-#include "../../include/linux/lnet/lib-lnet.h"
-#include "../../include/linux/lnet/lnetctl.h"
+#include <linux/lnet/lib-lnet.h>
+#include <uapi/linux/lnet/lnetctl.h>
 
 #define LNET_MSG_MASK		(LNET_PUT_BIT | LNET_ACK_BIT | \
 				 LNET_GET_BIT | LNET_REPLY_BIT)
@@ -349,7 +350,7 @@ drop_rule_match(struct lnet_drop_rule *rule, lnet_nid_t src,
  * Check if message from \a src to \a dst can match any existed drop rule
  */
 bool
-lnet_drop_rule_match(lnet_hdr_t *hdr)
+lnet_drop_rule_match(struct lnet_hdr *hdr)
 {
 	struct lnet_drop_rule *rule;
 	lnet_nid_t src = le64_to_cpu(hdr->src_nid);
@@ -530,7 +531,7 @@ delay_rule_match(struct lnet_delay_rule *rule, lnet_nid_t src,
  * will be delayed if there is a match.
  */
 bool
-lnet_delay_rule_match_locked(lnet_hdr_t *hdr, struct lnet_msg *msg)
+lnet_delay_rule_match_locked(struct lnet_hdr *hdr, struct lnet_msg *msg)
 {
 	struct lnet_delay_rule *rule;
 	lnet_nid_t src = le64_to_cpu(hdr->src_nid);
@@ -629,6 +630,7 @@ delayed_msg_process(struct list_head *msg_list, bool drop)
 			case LNET_CREDIT_OK:
 				lnet_ni_recv(ni, msg->msg_private, msg, 0,
 					     0, msg->msg_len, msg->msg_len);
+				/* fall through */
 			case LNET_CREDIT_WAIT:
 				continue;
 			default: /* failures */
@@ -698,9 +700,9 @@ lnet_delay_rule_daemon(void *arg)
 }
 
 static void
-delay_timer_cb(unsigned long arg)
+delay_timer_cb(struct timer_list *t)
 {
-	struct lnet_delay_rule *rule = (struct lnet_delay_rule *)arg;
+	struct lnet_delay_rule *rule = from_timer(rule, t, dl_timer);
 
 	spin_lock_bh(&delay_dd.dd_lock);
 	if (list_empty(&rule->dl_sched_link) && delay_dd.dd_running) {
@@ -760,7 +762,7 @@ lnet_delay_rule_add(struct lnet_fault_attr *attr)
 		wait_event(delay_dd.dd_ctl_waitq, delay_dd.dd_running);
 	}
 
-	setup_timer(&rule->dl_timer, delay_timer_cb, (unsigned long)rule);
+	timer_setup(&rule->dl_timer, delay_timer_cb, 0);
 
 	spin_lock_init(&rule->dl_lock);
 	INIT_LIST_HEAD(&rule->dl_msg_list);
@@ -997,10 +999,10 @@ lnet_fault_ctl(int opc, struct libcfs_ioctl_data *data)
 int
 lnet_fault_init(void)
 {
-	CLASSERT(LNET_PUT_BIT == 1 << LNET_MSG_PUT);
-	CLASSERT(LNET_ACK_BIT == 1 << LNET_MSG_ACK);
-	CLASSERT(LNET_GET_BIT == 1 << LNET_MSG_GET);
-	CLASSERT(LNET_REPLY_BIT == 1 << LNET_MSG_REPLY);
+	BUILD_BUG_ON(LNET_PUT_BIT != 1 << LNET_MSG_PUT);
+	BUILD_BUG_ON(LNET_ACK_BIT != 1 << LNET_MSG_ACK);
+	BUILD_BUG_ON(LNET_GET_BIT != 1 << LNET_MSG_GET);
+	BUILD_BUG_ON(LNET_REPLY_BIT != 1 << LNET_MSG_REPLY);
 
 	mutex_init(&delay_dd.dd_mutex);
 	spin_lock_init(&delay_dd.dd_lock);

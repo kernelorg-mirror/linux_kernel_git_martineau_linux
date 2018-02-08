@@ -53,7 +53,7 @@
  * - Multiqueue RX/TX
  */
 
-#define PE_MIN_MTU	64
+#define PE_MIN_MTU	(ETH_ZLEN + ETH_HLEN)
 #define PE_MAX_MTU	9000
 #define PE_DEF_MTU	ETH_DATA_LEN
 
@@ -943,9 +943,9 @@ static irqreturn_t pasemi_mac_rx_intr(int irq, void *data)
 
 #define TX_CLEAN_INTERVAL HZ
 
-static void pasemi_mac_tx_timer(unsigned long data)
+static void pasemi_mac_tx_timer(struct timer_list *t)
 {
-	struct pasemi_mac_txring *txring = (struct pasemi_mac_txring *)data;
+	struct pasemi_mac_txring *txring = from_timer(txring, t, clean_timer);
 	struct pasemi_mac *mac = txring->mac;
 
 	pasemi_mac_clean_tx(txring);
@@ -1199,8 +1199,7 @@ static int pasemi_mac_open(struct net_device *dev)
 	if (dev->phydev)
 		phy_start(dev->phydev);
 
-	setup_timer(&mac->tx->clean_timer, pasemi_mac_tx_timer,
-		    (unsigned long)mac->tx);
+	timer_setup(&mac->tx->clean_timer, pasemi_mac_tx_timer, 0);
 	mod_timer(&mac->tx->clean_timer, jiffies + HZ);
 
 	return 0;
@@ -1575,7 +1574,7 @@ static int pasemi_mac_poll(struct napi_struct *napi, int budget)
 	pkts = pasemi_mac_clean_rx(rx_ring(mac), budget);
 	if (pkts < budget) {
 		/* all done, no more packets present */
-		napi_complete(napi);
+		napi_complete_done(napi, pkts);
 
 		pasemi_mac_restart_rx_intr(mac);
 		pasemi_mac_restart_tx_intr(mac);
@@ -1611,9 +1610,6 @@ static int pasemi_mac_change_mtu(struct net_device *dev, int new_mtu)
 	int running;
 	int ret = 0;
 
-	if (new_mtu < PE_MIN_MTU || new_mtu > PE_MAX_MTU)
-		return -EINVAL;
-
 	running = netif_running(dev);
 
 	if (running) {
@@ -1635,7 +1631,7 @@ static int pasemi_mac_change_mtu(struct net_device *dev, int new_mtu)
 	}
 
 	/* Setup checksum channels if large MTU and none already allocated */
-	if (new_mtu > 1500 && !mac->num_cs) {
+	if (new_mtu > PE_DEF_MTU && !mac->num_cs) {
 		pasemi_mac_setup_csrings(mac);
 		if (!mac->num_cs) {
 			ret = -ENOMEM;
@@ -1757,6 +1753,11 @@ pasemi_mac_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	dev->netdev_ops = &pasemi_netdev_ops;
 	dev->mtu = PE_DEF_MTU;
+
+	/* MTU range: 64 - 9000 */
+	dev->min_mtu = PE_MIN_MTU;
+	dev->max_mtu = PE_MAX_MTU;
+
 	/* 1500 MTU + ETH_HLEN + VLAN_HLEN + 2 64B cachelines */
 	mac->bufsz = dev->mtu + ETH_HLEN + ETH_FCS_LEN + LOCAL_SKB_ALIGN + 128;
 

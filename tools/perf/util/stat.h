@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __PERF_STATS_H
 #define __PERF_STATS_H
 
@@ -22,12 +23,15 @@ enum perf_stat_evsel_id {
 	PERF_STAT_EVSEL_ID__TOPDOWN_SLOTS_RETIRED,
 	PERF_STAT_EVSEL_ID__TOPDOWN_FETCH_BUBBLES,
 	PERF_STAT_EVSEL_ID__TOPDOWN_RECOVERY_BUBBLES,
+	PERF_STAT_EVSEL_ID__SMI_NUM,
+	PERF_STAT_EVSEL_ID__APERF,
 	PERF_STAT_EVSEL_ID__MAX,
 };
 
 struct perf_stat_evsel {
-	struct stats		res_stats[3];
-	enum perf_stat_evsel_id	id;
+	struct stats		 res_stats[3];
+	enum perf_stat_evsel_id	 id;
+	u64			*group_data;
 };
 
 enum aggr_mode {
@@ -79,17 +83,21 @@ typedef void (*new_line_t )(void *ctx);
 
 void perf_stat__init_shadow_stats(void);
 void perf_stat__reset_shadow_stats(void);
-void perf_stat__update_shadow_stats(struct perf_evsel *counter, u64 *count,
+void perf_stat__update_shadow_stats(struct perf_evsel *counter, u64 count,
 				    int cpu);
 struct perf_stat_output_ctx {
 	void *ctx;
 	print_metric_t print_metric;
 	new_line_t new_line;
+	bool force_header;
 };
 
+struct rblist;
 void perf_stat__print_shadow_stats(struct perf_evsel *evsel,
 				   double avg, int cpu,
-				   struct perf_stat_output_ctx *out);
+				   struct perf_stat_output_ctx *out,
+				   struct rblist *metric_events);
+void perf_stat__collect_metric_expr(struct perf_evlist *);
 
 int perf_evlist__alloc_stats(struct perf_evlist *evlist, bool alloc_raw);
 void perf_evlist__free_stats(struct perf_evlist *evlist);

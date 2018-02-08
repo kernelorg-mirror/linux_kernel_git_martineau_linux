@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * GPL HEADER START
  *
@@ -33,9 +34,9 @@
  * x(n)=a*x(n-1)+carry mod 2^16 and y(n)=b*y(n-1)+carry mod 2^16,
  * number and carry packed within the same 32 bit integer.
  * algorithm recommended by Marsaglia
-*/
+ */
 
-#include "../../include/linux/libcfs/libcfs.h"
+#include <linux/libcfs/libcfs.h>
 
 /*
  * From: George Marsaglia <geo@stat.fsu.edu>

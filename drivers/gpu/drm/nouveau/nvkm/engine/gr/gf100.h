@@ -29,6 +29,7 @@
 #include <core/gpuobj.h>
 #include <subdev/ltc.h>
 #include <subdev/mmu.h>
+#include <engine/falcon.h>
 
 #define GPC_MAX 32
 #define TPC_MAX_PER_GPC 8
@@ -44,7 +45,7 @@
 struct gf100_gr_data {
 	u32 size;
 	u32 align;
-	u32 access;
+	bool priv;
 };
 
 struct gf100_gr_mmio {
@@ -75,6 +76,8 @@ struct gf100_gr {
 	const struct gf100_gr_func *func;
 	struct nvkm_gr base;
 
+	struct nvkm_falcon *fecs;
+	struct nvkm_falcon *gpccs;
 	struct gf100_gr_fuc fuc409c;
 	struct gf100_gr_fuc fuc409d;
 	struct gf100_gr_fuc fuc41ac;
@@ -121,6 +124,8 @@ struct gf100_gr_func {
 	void (*init_gpc_mmu)(struct gf100_gr *);
 	void (*init_rop_active_fbps)(struct gf100_gr *);
 	void (*init_ppc_exceptions)(struct gf100_gr *);
+	void (*init_swdx_pes_mask)(struct gf100_gr *);
+	void (*init_num_active_ltcs)(struct gf100_gr *);
 	void (*set_hww_esr_report_mask)(struct gf100_gr *);
 	const struct gf100_gr_pack *mmio;
 	struct {
@@ -147,19 +152,24 @@ int gk20a_gr_init(struct gf100_gr *);
 int gm200_gr_init(struct gf100_gr *);
 int gm200_gr_rops(struct gf100_gr *);
 
+int gp100_gr_init(struct gf100_gr *);
+void gp100_gr_init_rop_active_fbps(struct gf100_gr *);
+
 #define gf100_gr_chan(p) container_of((p), struct gf100_gr_chan, object)
+#include <core/object.h>
 
 struct gf100_gr_chan {
 	struct nvkm_object object;
 	struct gf100_gr *gr;
+	struct nvkm_vmm *vmm;
 
 	struct nvkm_memory *mmio;
-	struct nvkm_vma mmio_vma;
+	struct nvkm_vma *mmio_vma;
 	int mmio_nr;
 
 	struct {
 		struct nvkm_memory *mem;
-		struct nvkm_vma vma;
+		struct nvkm_vma *vma;
 	} data[4];
 };
 
@@ -245,6 +255,7 @@ extern const struct gf100_gr_init gf100_gr_init_mpc_0[];
 extern const struct gf100_gr_init gf100_gr_init_be_0[];
 extern const struct gf100_gr_init gf100_gr_init_fe_1[];
 extern const struct gf100_gr_init gf100_gr_init_pe_1[];
+void gf100_gr_init_gpc_mmu(struct gf100_gr *);
 
 extern const struct gf100_gr_init gf104_gr_init_ds_0[];
 extern const struct gf100_gr_init gf104_gr_init_tex_0[];
@@ -294,4 +305,8 @@ extern const struct gf100_gr_init gm107_gr_init_cbm_0[];
 void gm107_gr_init_bios(struct gf100_gr *);
 
 void gm200_gr_init_gpc_mmu(struct gf100_gr *);
+
+void gp100_gr_init_num_active_ltcs(struct gf100_gr *gr);
+
+void gp102_gr_init_swdx_pes_mask(struct gf100_gr *);
 #endif

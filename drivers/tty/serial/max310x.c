@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  *  Maxim (Dallas) MAX3107/8/9, MAX14830 serial driver
  *
@@ -6,11 +7,6 @@
  *  Based on max3100.c, by Christian Pellegrin <chripell@evolware.org>
  *  Based on max3110.c, by Feng Tang <feng.tang@intel.com>
  *  Based on max3107.c, by Aavamobile
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
  */
 
 #include <linux/bitops.h>
@@ -236,7 +232,7 @@
 
 /* Misc definitions */
 #define MAX310X_FIFO_SIZE		(128)
-#define MAX310x_REV_MASK		(0xfc)
+#define MAX310x_REV_MASK		(0xf8)
 
 /* MAX3107 specific */
 #define MAX3107_REV_ID			(0xa0)
@@ -1329,9 +1325,9 @@ static int max310x_spi_probe(struct spi_device *spi)
 		const struct spi_device_id *id_entry = spi_get_device_id(spi);
 
 		devtype = (struct max310x_devtype *)id_entry->driver_data;
-		flags = IRQF_TRIGGER_FALLING;
 	}
 
+	flags = IRQF_TRIGGER_FALLING;
 	regcfg.max_register = devtype->nr * 0x20 - 1;
 	regmap = devm_regmap_init_spi(spi, &regcfg);
 

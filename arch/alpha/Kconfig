@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 config ALPHA
 	bool
 	default y
@@ -15,7 +16,6 @@ config ALPHA
 	select GENERIC_IRQ_SHOW
 	select ARCH_WANT_IPC_PARSE_VERSION
 	select ARCH_HAVE_NMI_SAFE_CMPXCHG
-	select ARCH_HAS_ATOMIC64_DEC_IF_POSITIVE
 	select AUDIT_ARCH
 	select GENERIC_CLOCKEVENTS
 	select GENERIC_SMP_IDLE_THREAD
@@ -506,7 +506,7 @@ config ALPHA_QEMU
 
 	  Generic kernels will auto-detect QEMU.  But when building a
 	  system-specific kernel, the assumption is that we want to
-	  elimiate as many runtime tests as possible.
+	  eliminate as many runtime tests as possible.
 
 	  If unsure, say N.
 

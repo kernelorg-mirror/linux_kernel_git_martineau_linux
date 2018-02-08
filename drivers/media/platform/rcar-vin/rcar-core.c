@@ -21,7 +21,8 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 
-#include <media/v4l2-of.h>
+#include <media/v4l2-async.h>
+#include <media/v4l2-fwnode.h>
 
 #include "rcar-vin.h"
 
@@ -31,26 +32,37 @@
 
 #define notifier_to_vin(n) container_of(n, struct rvin_dev, notifier)
 
-static int rvin_mbus_supported(struct rvin_dev *vin)
+static int rvin_find_pad(struct v4l2_subdev *sd, int direction)
 {
-	struct v4l2_subdev *sd;
+	unsigned int pad;
+
+	if (sd->entity.num_pads <= 1)
+		return 0;
+
+	for (pad = 0; pad < sd->entity.num_pads; pad++)
+		if (sd->entity.pads[pad].flags & direction)
+			return pad;
+
+	return -EINVAL;
+}
+
+static bool rvin_mbus_supported(struct rvin_graph_entity *entity)
+{
+	struct v4l2_subdev *sd = entity->subdev;
 	struct v4l2_subdev_mbus_code_enum code = {
 		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
 	};
 
-	sd = vin_to_source(vin);
-
 	code.index = 0;
+	code.pad = entity->source_pad;
 	while (!v4l2_subdev_call(sd, pad, enum_mbus_code, NULL, &code)) {
 		code.index++;
 		switch (code.code) {
 		case MEDIA_BUS_FMT_YUYV8_1X16:
-		case MEDIA_BUS_FMT_YUYV8_2X8:
-		case MEDIA_BUS_FMT_YUYV10_2X10:
+		case MEDIA_BUS_FMT_UYVY8_2X8:
+		case MEDIA_BUS_FMT_UYVY10_2X10:
 		case MEDIA_BUS_FMT_RGB888_1X24:
-			vin->source.code = code.code;
-			vin_dbg(vin, "Found supported media bus format: %d\n",
-				vin->source.code);
+			entity->code = code.code;
 			return true;
 		default:
 			break;
@@ -60,10 +72,20 @@ static int rvin_mbus_supported(struct rvin_dev *vin)
 	return false;
 }
 
-static int rvin_graph_notify_complete(struct v4l2_async_notifier *notifier)
+static int rvin_digital_notify_complete(struct v4l2_async_notifier *notifier)
 {
 	struct rvin_dev *vin = notifier_to_vin(notifier);
 	int ret;
+
+	/* Verify subdevices mbus format */
+	if (!rvin_mbus_supported(vin->digital)) {
+		vin_err(vin, "Unsupported media bus format for %s\n",
+			vin->digital->subdev->name);
+		return -EINVAL;
+	}
+
+	vin_dbg(vin, "Found media bus format for %s: %d\n",
+		vin->digital->subdev->name, vin->digital->code);
 
 	ret = v4l2_device_register_subdev_nodes(&vin->v4l2_dev);
 	if (ret < 0) {
@@ -71,131 +93,110 @@ static int rvin_graph_notify_complete(struct v4l2_async_notifier *notifier)
 		return ret;
 	}
 
-	if (!rvin_mbus_supported(vin)) {
-		vin_err(vin, "No supported mediabus format found\n");
-		return -EINVAL;
-	}
-
 	return rvin_v4l2_probe(vin);
 }
 
-static void rvin_graph_notify_unbind(struct v4l2_async_notifier *notifier,
-				     struct v4l2_subdev *sd,
+static void rvin_digital_notify_unbind(struct v4l2_async_notifier *notifier,
+				       struct v4l2_subdev *subdev,
+				       struct v4l2_async_subdev *asd)
+{
+	struct rvin_dev *vin = notifier_to_vin(notifier);
+
+	vin_dbg(vin, "unbind digital subdev %s\n", subdev->name);
+	rvin_v4l2_remove(vin);
+	vin->digital->subdev = NULL;
+}
+
+static int rvin_digital_notify_bound(struct v4l2_async_notifier *notifier,
+				     struct v4l2_subdev *subdev,
 				     struct v4l2_async_subdev *asd)
 {
 	struct rvin_dev *vin = notifier_to_vin(notifier);
+	int ret;
 
-	rvin_v4l2_remove(vin);
+	v4l2_set_subdev_hostdata(subdev, vin);
+
+	/* Find source and sink pad of remote subdevice */
+
+	ret = rvin_find_pad(subdev, MEDIA_PAD_FL_SOURCE);
+	if (ret < 0)
+		return ret;
+	vin->digital->source_pad = ret;
+
+	ret = rvin_find_pad(subdev, MEDIA_PAD_FL_SINK);
+	vin->digital->sink_pad = ret < 0 ? 0 : ret;
+
+	vin->digital->subdev = subdev;
+
+	vin_dbg(vin, "bound subdev %s source pad: %u sink pad: %u\n",
+		subdev->name, vin->digital->source_pad,
+		vin->digital->sink_pad);
+
+	return 0;
 }
+static const struct v4l2_async_notifier_operations rvin_digital_notify_ops = {
+	.bound = rvin_digital_notify_bound,
+	.unbind = rvin_digital_notify_unbind,
+	.complete = rvin_digital_notify_complete,
+};
 
-static int rvin_graph_notify_bound(struct v4l2_async_notifier *notifier,
-				   struct v4l2_subdev *subdev,
+
+static int rvin_digital_parse_v4l2(struct device *dev,
+				   struct v4l2_fwnode_endpoint *vep,
 				   struct v4l2_async_subdev *asd)
 {
-	struct rvin_dev *vin = notifier_to_vin(notifier);
+	struct rvin_dev *vin = dev_get_drvdata(dev);
+	struct rvin_graph_entity *rvge =
+		container_of(asd, struct rvin_graph_entity, asd);
 
-	vin_dbg(vin, "subdev %s bound\n", subdev->name);
+	if (vep->base.port || vep->base.id)
+		return -ENOTCONN;
 
-	vin->entity.entity = &subdev->entity;
-	vin->entity.subdev = subdev;
+	rvge->mbus_cfg.type = vep->bus_type;
+
+	switch (rvge->mbus_cfg.type) {
+	case V4L2_MBUS_PARALLEL:
+		vin_dbg(vin, "Found PARALLEL media bus\n");
+		rvge->mbus_cfg.flags = vep->bus.parallel.flags;
+		break;
+	case V4L2_MBUS_BT656:
+		vin_dbg(vin, "Found BT656 media bus\n");
+		rvge->mbus_cfg.flags = 0;
+		break;
+	default:
+		vin_err(vin, "Unknown media bus type\n");
+		return -EINVAL;
+	}
+
+	vin->digital = rvge;
 
 	return 0;
 }
 
-static int rvin_graph_parse(struct rvin_dev *vin,
-			    struct device_node *node)
+static int rvin_digital_graph_init(struct rvin_dev *vin)
 {
-	struct device_node *remote;
-	struct device_node *ep = NULL;
-	struct device_node *next;
-	int ret = 0;
-
-	while (1) {
-		next = of_graph_get_next_endpoint(node, ep);
-		if (!next)
-			break;
-
-		of_node_put(ep);
-		ep = next;
-
-		remote = of_graph_get_remote_port_parent(ep);
-		if (!remote) {
-			ret = -EINVAL;
-			break;
-		}
-
-		/* Skip entities that we have already processed. */
-		if (remote == vin->dev->of_node) {
-			of_node_put(remote);
-			continue;
-		}
-
-		/* Remote node to connect */
-		if (!vin->entity.node) {
-			vin->entity.node = remote;
-			vin->entity.asd.match_type = V4L2_ASYNC_MATCH_OF;
-			vin->entity.asd.match.of.node = remote;
-			ret++;
-		}
-	}
-
-	of_node_put(ep);
-
-	return ret;
-}
-
-static int rvin_graph_init(struct rvin_dev *vin)
-{
-	struct v4l2_async_subdev **subdevs = NULL;
 	int ret;
 
-	/* Parse the graph to extract a list of subdevice DT nodes. */
-	ret = rvin_graph_parse(vin, vin->dev->of_node);
-	if (ret < 0) {
-		vin_err(vin, "Graph parsing failed\n");
-		goto done;
-	}
+	ret = v4l2_async_notifier_parse_fwnode_endpoints(
+		vin->dev, &vin->notifier,
+		sizeof(struct rvin_graph_entity), rvin_digital_parse_v4l2);
+	if (ret)
+		return ret;
 
-	if (!ret) {
-		vin_err(vin, "No subdev found in graph\n");
-		goto done;
-	}
+	if (!vin->digital)
+		return -ENODEV;
 
-	if (ret != 1) {
-		vin_err(vin, "More then one subdev found in graph\n");
-		goto done;
-	}
+	vin_dbg(vin, "Found digital subdevice %pOF\n",
+		to_of_node(vin->digital->asd.match.fwnode.fwnode));
 
-	/* Register the subdevices notifier. */
-	subdevs = devm_kzalloc(vin->dev, sizeof(*subdevs), GFP_KERNEL);
-	if (subdevs == NULL) {
-		ret = -ENOMEM;
-		goto done;
-	}
-
-	subdevs[0] = &vin->entity.asd;
-
-	vin->notifier.subdevs = subdevs;
-	vin->notifier.num_subdevs = 1;
-	vin->notifier.bound = rvin_graph_notify_bound;
-	vin->notifier.unbind = rvin_graph_notify_unbind;
-	vin->notifier.complete = rvin_graph_notify_complete;
-
+	vin->notifier.ops = &rvin_digital_notify_ops;
 	ret = v4l2_async_notifier_register(&vin->v4l2_dev, &vin->notifier);
 	if (ret < 0) {
 		vin_err(vin, "Notifier registration failed\n");
-		goto done;
+		return ret;
 	}
 
-	ret = 0;
-
-done:
-	if (ret < 0) {
-		v4l2_async_notifier_unregister(&vin->notifier);
-		of_node_put(vin->entity.node);
-	}
-
-	return ret;
+	return 0;
 }
 
 /* -----------------------------------------------------------------------------
@@ -209,56 +210,14 @@ static const struct of_device_id rvin_of_id_table[] = {
 	{ .compatible = "renesas,vin-r8a7790", .data = (void *)RCAR_GEN2 },
 	{ .compatible = "renesas,vin-r8a7779", .data = (void *)RCAR_H1 },
 	{ .compatible = "renesas,vin-r8a7778", .data = (void *)RCAR_M1 },
+	{ .compatible = "renesas,rcar-gen2-vin", .data = (void *)RCAR_GEN2 },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, rvin_of_id_table);
 
-static int rvin_parse_dt(struct rvin_dev *vin)
-{
-	const struct of_device_id *match;
-	struct v4l2_of_endpoint ep;
-	struct device_node *np;
-	int ret;
-
-	match = of_match_device(of_match_ptr(rvin_of_id_table), vin->dev);
-	if (!match)
-		return -ENODEV;
-
-	vin->chip = (enum chip_id)match->data;
-
-	np = of_graph_get_next_endpoint(vin->dev->of_node, NULL);
-	if (!np) {
-		vin_err(vin, "Could not find endpoint\n");
-		return -EINVAL;
-	}
-
-	ret = v4l2_of_parse_endpoint(np, &ep);
-	if (ret) {
-		vin_err(vin, "Could not parse endpoint\n");
-		return ret;
-	}
-
-	of_node_put(np);
-
-	vin->mbus_cfg.type = ep.bus_type;
-
-	switch (vin->mbus_cfg.type) {
-	case V4L2_MBUS_PARALLEL:
-		vin->mbus_cfg.flags = ep.bus.parallel.flags;
-		break;
-	case V4L2_MBUS_BT656:
-		vin->mbus_cfg.flags = 0;
-		break;
-	default:
-		vin_err(vin, "Unknown media bus type\n");
-		return -EINVAL;
-	}
-
-	return 0;
-}
-
 static int rcar_vin_probe(struct platform_device *pdev)
 {
+	const struct of_device_id *match;
 	struct rvin_dev *vin;
 	struct resource *mem;
 	int irq, ret;
@@ -267,11 +226,12 @@ static int rcar_vin_probe(struct platform_device *pdev)
 	if (!vin)
 		return -ENOMEM;
 
-	vin->dev = &pdev->dev;
+	match = of_match_device(of_match_ptr(rvin_of_id_table), &pdev->dev);
+	if (!match)
+		return -ENODEV;
 
-	ret = rvin_parse_dt(vin);
-	if (ret)
-		return ret;
+	vin->dev = &pdev->dev;
+	vin->chip = (enum chip_id)match->data;
 
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (mem == NULL)
@@ -282,25 +242,26 @@ static int rcar_vin_probe(struct platform_device *pdev)
 		return PTR_ERR(vin->base);
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq <= 0)
-		return ret;
+	if (irq < 0)
+		return irq;
 
 	ret = rvin_dma_probe(vin, irq);
 	if (ret)
 		return ret;
 
-	ret = rvin_graph_init(vin);
+	platform_set_drvdata(pdev, vin);
+
+	ret = rvin_digital_graph_init(vin);
 	if (ret < 0)
 		goto error;
 
 	pm_suspend_ignore_children(&pdev->dev, true);
 	pm_runtime_enable(&pdev->dev);
 
-	platform_set_drvdata(pdev, vin);
-
 	return 0;
 error:
 	rvin_dma_remove(vin);
+	v4l2_async_notifier_cleanup(&vin->notifier);
 
 	return ret;
 }
@@ -312,6 +273,7 @@ static int rcar_vin_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 
 	v4l2_async_notifier_unregister(&vin->notifier);
+	v4l2_async_notifier_cleanup(&vin->notifier);
 
 	rvin_dma_remove(vin);
 

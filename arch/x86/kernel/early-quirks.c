@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* Various workarounds for chipset bugs.
    This code runs very early and can't use the regular PCI subsystem
    The entries are keyed to PCI bridges which usually identify chipsets
@@ -12,10 +13,10 @@
 #include <linux/pci.h>
 #include <linux/acpi.h>
 #include <linux/delay.h>
-#include <linux/dmi.h>
 #include <linux/pci_ids.h>
 #include <linux/bcma/bcma.h>
 #include <linux/bcma/bcma_regs.h>
+#include <linux/platform_data/x86/apple.h>
 #include <drm/i915_drm.h>
 #include <asm/pci-direct.h>
 #include <asm/dma.h>
@@ -317,16 +318,11 @@ static phys_addr_t __init i85x_stolen_base(int num, int slot, int func,
 static phys_addr_t __init i865_stolen_base(int num, int slot, int func,
 					   size_t stolen_size)
 {
-	u16 toud;
+	u16 toud = 0;
 
-	/*
-	 * FIXME is the graphics stolen memory region
-	 * always at TOUD? Ie. is it always the last
-	 * one to be allocated by the BIOS?
-	 */
 	toud = read_pci_config_16(0, 0, 0, I865_TOUD);
 
-	return (phys_addr_t)toud << 16;
+	return (phys_addr_t)(toud << 16) + i845_tseg_size();
 }
 
 static phys_addr_t __init gen3_stolen_base(int num, int slot, int func,
@@ -512,8 +508,7 @@ static const struct pci_device_id intel_early_ids[] __initconst = {
 	INTEL_I915GM_IDS(&gen3_early_ops),
 	INTEL_I945G_IDS(&gen3_early_ops),
 	INTEL_I945GM_IDS(&gen3_early_ops),
-	INTEL_VLV_M_IDS(&gen6_early_ops),
-	INTEL_VLV_D_IDS(&gen6_early_ops),
+	INTEL_VLV_IDS(&gen6_early_ops),
 	INTEL_PINEVIEW_IDS(&gen3_early_ops),
 	INTEL_I965G_IDS(&gen3_early_ops),
 	INTEL_G33_IDS(&gen3_early_ops),
@@ -526,14 +521,14 @@ static const struct pci_device_id intel_early_ids[] __initconst = {
 	INTEL_SNB_M_IDS(&gen6_early_ops),
 	INTEL_IVB_M_IDS(&gen6_early_ops),
 	INTEL_IVB_D_IDS(&gen6_early_ops),
-	INTEL_HSW_D_IDS(&gen6_early_ops),
-	INTEL_HSW_M_IDS(&gen6_early_ops),
-	INTEL_BDW_M_IDS(&gen8_early_ops),
-	INTEL_BDW_D_IDS(&gen8_early_ops),
+	INTEL_HSW_IDS(&gen6_early_ops),
+	INTEL_BDW_IDS(&gen8_early_ops),
 	INTEL_CHV_IDS(&chv_early_ops),
 	INTEL_SKL_IDS(&gen9_early_ops),
 	INTEL_BXT_IDS(&gen9_early_ops),
 	INTEL_KBL_IDS(&gen9_early_ops),
+	INTEL_GLK_IDS(&gen9_early_ops),
+	INTEL_CNL_IDS(&gen9_early_ops),
 };
 
 static void __init
@@ -554,8 +549,8 @@ intel_graphics_stolen(int num, int slot, int func,
 	       &base, &end);
 
 	/* Mark this space as reserved */
-	e820_add_region(base, size, E820_RESERVED);
-	sanitize_e820_map(e820.map, ARRAY_SIZE(e820.map), &e820.nr_map);
+	e820__range_add(base, size, E820_TYPE_RESERVED);
+	e820__update_table(e820_table);
 }
 
 static void __init intel_graphics_quirks(int num, int slot, int func)
@@ -600,7 +595,7 @@ static void __init apple_airport_reset(int bus, int slot, int func)
 	u64 addr;
 	int i;
 
-	if (!dmi_match(DMI_SYS_VENDOR, "Apple Inc."))
+	if (!x86_apple_machine)
 		return;
 
 	/* Card may have been put into PCI_D3hot by grub quirk */

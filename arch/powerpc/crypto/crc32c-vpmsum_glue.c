@@ -4,6 +4,7 @@
 #include <linux/module.h>
 #include <linux/string.h>
 #include <linux/kernel.h>
+#include <linux/cpufeature.h>
 #include <asm/switch_to.h>
 
 #define CHKSUM_BLOCK_SIZE	1
@@ -32,10 +33,13 @@ static u32 crc32c_vpmsum(u32 crc, unsigned char const *p, size_t len)
 	}
 
 	if (len & ~VMX_ALIGN_MASK) {
+		preempt_disable();
 		pagefault_disable();
 		enable_kernel_altivec();
 		crc = __crc32c_vpmsum(crc, p, len & ~VMX_ALIGN_MASK);
+		disable_kernel_altivec();
 		pagefault_enable();
+		preempt_enable();
 	}
 
 	tail = len & VMX_ALIGN_MASK;
@@ -51,7 +55,7 @@ static int crc32c_vpmsum_cra_init(struct crypto_tfm *tfm)
 {
 	u32 *key = crypto_tfm_ctx(tfm);
 
-	*key = 0;
+	*key = ~0;
 
 	return 0;
 }
@@ -157,7 +161,7 @@ static void __exit crc32c_vpmsum_mod_fini(void)
 	crypto_unregister_shash(&alg);
 }
 
-module_init(crc32c_vpmsum_mod_init);
+module_cpu_feature_match(PPC_MODULE_FEATURE_VEC_CRYPTO, crc32c_vpmsum_mod_init);
 module_exit(crc32c_vpmsum_mod_fini);
 
 MODULE_AUTHOR("Anton Blanchard <anton@samba.org>");

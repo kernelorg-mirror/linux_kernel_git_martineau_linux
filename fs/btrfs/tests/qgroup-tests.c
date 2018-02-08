@@ -240,7 +240,8 @@ static int test_no_shared_qgroup(struct btrfs_root *root,
 	 * we can only call btrfs_qgroup_account_extent() directly to test
 	 * quota.
 	 */
-	ret = btrfs_find_all_roots(&trans, fs_info, nodesize, 0, &old_roots);
+	ret = btrfs_find_all_roots(&trans, fs_info, nodesize, 0, &old_roots,
+			false);
 	if (ret) {
 		ulist_free(old_roots);
 		test_msg("Couldn't find old roots: %d\n", ret);
@@ -252,7 +253,8 @@ static int test_no_shared_qgroup(struct btrfs_root *root,
 	if (ret)
 		return ret;
 
-	ret = btrfs_find_all_roots(&trans, fs_info, nodesize, 0, &new_roots);
+	ret = btrfs_find_all_roots(&trans, fs_info, nodesize, 0, &new_roots,
+			false);
 	if (ret) {
 		ulist_free(old_roots);
 		ulist_free(new_roots);
@@ -275,7 +277,8 @@ static int test_no_shared_qgroup(struct btrfs_root *root,
 	old_roots = NULL;
 	new_roots = NULL;
 
-	ret = btrfs_find_all_roots(&trans, fs_info, nodesize, 0, &old_roots);
+	ret = btrfs_find_all_roots(&trans, fs_info, nodesize, 0, &old_roots,
+			false);
 	if (ret) {
 		ulist_free(old_roots);
 		test_msg("Couldn't find old roots: %d\n", ret);
@@ -286,7 +289,8 @@ static int test_no_shared_qgroup(struct btrfs_root *root,
 	if (ret)
 		return -EINVAL;
 
-	ret = btrfs_find_all_roots(&trans, fs_info, nodesize, 0, &new_roots);
+	ret = btrfs_find_all_roots(&trans, fs_info, nodesize, 0, &new_roots,
+			false);
 	if (ret) {
 		ulist_free(old_roots);
 		ulist_free(new_roots);
@@ -337,7 +341,8 @@ static int test_multiple_refs(struct btrfs_root *root,
 		return ret;
 	}
 
-	ret = btrfs_find_all_roots(&trans, fs_info, nodesize, 0, &old_roots);
+	ret = btrfs_find_all_roots(&trans, fs_info, nodesize, 0, &old_roots,
+			false);
 	if (ret) {
 		ulist_free(old_roots);
 		test_msg("Couldn't find old roots: %d\n", ret);
@@ -349,7 +354,8 @@ static int test_multiple_refs(struct btrfs_root *root,
 	if (ret)
 		return ret;
 
-	ret = btrfs_find_all_roots(&trans, fs_info, nodesize, 0, &new_roots);
+	ret = btrfs_find_all_roots(&trans, fs_info, nodesize, 0, &new_roots,
+			false);
 	if (ret) {
 		ulist_free(old_roots);
 		ulist_free(new_roots);
@@ -370,7 +376,8 @@ static int test_multiple_refs(struct btrfs_root *root,
 		return -EINVAL;
 	}
 
-	ret = btrfs_find_all_roots(&trans, fs_info, nodesize, 0, &old_roots);
+	ret = btrfs_find_all_roots(&trans, fs_info, nodesize, 0, &old_roots,
+			false);
 	if (ret) {
 		ulist_free(old_roots);
 		test_msg("Couldn't find old roots: %d\n", ret);
@@ -382,7 +389,8 @@ static int test_multiple_refs(struct btrfs_root *root,
 	if (ret)
 		return ret;
 
-	ret = btrfs_find_all_roots(&trans, fs_info, nodesize, 0, &new_roots);
+	ret = btrfs_find_all_roots(&trans, fs_info, nodesize, 0, &new_roots,
+			false);
 	if (ret) {
 		ulist_free(old_roots);
 		ulist_free(new_roots);
@@ -409,7 +417,8 @@ static int test_multiple_refs(struct btrfs_root *root,
 		return -EINVAL;
 	}
 
-	ret = btrfs_find_all_roots(&trans, fs_info, nodesize, 0, &old_roots);
+	ret = btrfs_find_all_roots(&trans, fs_info, nodesize, 0, &old_roots,
+			false);
 	if (ret) {
 		ulist_free(old_roots);
 		test_msg("Couldn't find old roots: %d\n", ret);
@@ -421,7 +430,8 @@ static int test_multiple_refs(struct btrfs_root *root,
 	if (ret)
 		return ret;
 
-	ret = btrfs_find_all_roots(&trans, fs_info, nodesize, 0, &new_roots);
+	ret = btrfs_find_all_roots(&trans, fs_info, nodesize, 0, &new_roots,
+			false);
 	if (ret) {
 		ulist_free(old_roots);
 		ulist_free(new_roots);
@@ -458,13 +468,13 @@ int btrfs_test_qgroups(u32 sectorsize, u32 nodesize)
 	struct btrfs_root *tmp_root;
 	int ret = 0;
 
-	fs_info = btrfs_alloc_dummy_fs_info();
+	fs_info = btrfs_alloc_dummy_fs_info(nodesize, sectorsize);
 	if (!fs_info) {
 		test_msg("Couldn't allocate dummy fs info\n");
 		return -ENOMEM;
 	}
 
-	root = btrfs_alloc_dummy_root(fs_info, sectorsize, nodesize);
+	root = btrfs_alloc_dummy_root(fs_info);
 	if (IS_ERR(root)) {
 		test_msg("Couldn't allocate root\n");
 		ret = PTR_ERR(root);
@@ -480,14 +490,13 @@ int btrfs_test_qgroups(u32 sectorsize, u32 nodesize)
 	 */
 	root->fs_info->tree_root = root;
 	root->fs_info->quota_root = root;
-	root->fs_info->quota_enabled = 1;
+	set_bit(BTRFS_FS_QUOTA_ENABLED, &fs_info->flags);
 
 	/*
 	 * Can't use bytenr 0, some things freak out
 	 * *cough*backref walking code*cough*
 	 */
-	root->node = alloc_test_extent_buffer(root->fs_info, nodesize,
-					nodesize);
+	root->node = alloc_test_extent_buffer(root->fs_info, nodesize);
 	if (!root->node) {
 		test_msg("Couldn't allocate dummy buffer\n");
 		ret = -ENOMEM;
@@ -497,7 +506,7 @@ int btrfs_test_qgroups(u32 sectorsize, u32 nodesize)
 	btrfs_set_header_nritems(root->node, 0);
 	root->alloc_bytenr += 2 * nodesize;
 
-	tmp_root = btrfs_alloc_dummy_root(fs_info, sectorsize, nodesize);
+	tmp_root = btrfs_alloc_dummy_root(fs_info);
 	if (IS_ERR(tmp_root)) {
 		test_msg("Couldn't allocate a fs root\n");
 		ret = PTR_ERR(tmp_root);
@@ -512,7 +521,7 @@ int btrfs_test_qgroups(u32 sectorsize, u32 nodesize)
 		goto out;
 	}
 
-	tmp_root = btrfs_alloc_dummy_root(fs_info, sectorsize, nodesize);
+	tmp_root = btrfs_alloc_dummy_root(fs_info);
 	if (IS_ERR(tmp_root)) {
 		test_msg("Couldn't allocate a fs root\n");
 		ret = PTR_ERR(tmp_root);

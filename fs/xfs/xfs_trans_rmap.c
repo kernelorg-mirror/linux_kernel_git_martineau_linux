@@ -48,11 +48,20 @@ xfs_trans_set_rmap_flags(
 	case XFS_RMAP_MAP:
 		rmap->me_flags |= XFS_RMAP_EXTENT_MAP;
 		break;
+	case XFS_RMAP_MAP_SHARED:
+		rmap->me_flags |= XFS_RMAP_EXTENT_MAP_SHARED;
+		break;
 	case XFS_RMAP_UNMAP:
 		rmap->me_flags |= XFS_RMAP_EXTENT_UNMAP;
 		break;
+	case XFS_RMAP_UNMAP_SHARED:
+		rmap->me_flags |= XFS_RMAP_EXTENT_UNMAP_SHARED;
+		break;
 	case XFS_RMAP_CONVERT:
 		rmap->me_flags |= XFS_RMAP_EXTENT_CONVERT;
+		break;
+	case XFS_RMAP_CONVERT_SHARED:
+		rmap->me_flags |= XFS_RMAP_EXTENT_CONVERT_SHARED;
 		break;
 	case XFS_RMAP_ALLOC:
 		rmap->me_flags |= XFS_RMAP_EXTENT_ALLOC;
@@ -87,7 +96,7 @@ xfs_trans_log_finish_rmap_update(
 	struct xfs_trans		*tp,
 	struct xfs_rud_log_item		*rudp,
 	enum xfs_rmap_intent_type	type,
-	__uint64_t			owner,
+	uint64_t			owner,
 	int				whichfork,
 	xfs_fileoff_t			startoff,
 	xfs_fsblock_t			startblock,

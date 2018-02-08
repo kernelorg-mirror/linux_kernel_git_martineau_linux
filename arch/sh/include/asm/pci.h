@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_PCI_H
 #define __ASM_SH_PCI_H
 
@@ -63,12 +64,8 @@ extern int pci_is_66mhz_capable(struct pci_channel *hose,
 
 extern unsigned long PCIBIOS_MIN_IO, PCIBIOS_MIN_MEM;
 
-struct pci_dev;
-
 #define HAVE_PCI_MMAP
-extern int pci_mmap_page_range(struct pci_dev *dev, struct vm_area_struct *vma,
-	enum pci_mmap_state mmap_state, int write_combine);
-extern void pcibios_set_master(struct pci_dev *dev);
+#define ARCH_GENERIC_PCI_MMAP_RESOURCE
 
 /* Dynamic DMA mapping stuff.
  * SuperH has everything mapped statically like x86.

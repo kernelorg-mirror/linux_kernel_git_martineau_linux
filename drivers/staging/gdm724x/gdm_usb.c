@@ -415,10 +415,10 @@ static void do_rx(struct work_struct *work)
 		switch (cmd_evt) {
 		case LTE_GET_INFORMATION_RESULT:
 			if (set_mac_address(hci->data, r->cb_data) == 0) {
-				ret = r->callback(r->cb_data,
-						  r->buf,
-						  r->urb->actual_length,
-						  KERNEL_THREAD);
+				r->callback(r->cb_data,
+					    r->buf,
+					    r->urb->actual_length,
+					    KERNEL_THREAD);
 			}
 			break;
 
@@ -738,11 +738,11 @@ static int gdm_usb_sdu_send(void *priv_dev, void *data, int len,
 	sdu->cmd_evt = gdm_cpu_to_dev16(&udev->gdm_ed, LTE_TX_SDU);
 	if (nic_type == NIC_TYPE_ARP) {
 		send_len = len + SDU_PARAM_LEN;
-	    memcpy(sdu->data, data, len);
+		memcpy(sdu->data, data, len);
 	} else {
-	    send_len = len - ETH_HLEN;
-	    send_len += SDU_PARAM_LEN;
-	    memcpy(sdu->data, data + ETH_HLEN, len - ETH_HLEN);
+		send_len = len - ETH_HLEN;
+		send_len += SDU_PARAM_LEN;
+		memcpy(sdu->data, data + ETH_HLEN, len - ETH_HLEN);
 	}
 
 	sdu->len = gdm_cpu_to_dev16(&udev->gdm_ed, send_len);

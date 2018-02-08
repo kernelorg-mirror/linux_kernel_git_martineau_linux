@@ -39,9 +39,9 @@ static int num_ttys = 4;	    /* # of std ttys to create per fw_card    */
 static bool auto_connect = true;    /* try to VIRT_CABLE to every peer        */
 static bool create_loop_dev = true; /* create a loopback device for each card */
 
-module_param_named(ttys, num_ttys, int, S_IRUGO | S_IWUSR);
-module_param_named(auto, auto_connect, bool, S_IRUGO | S_IWUSR);
-module_param_named(loop, create_loop_dev, bool, S_IRUGO | S_IWUSR);
+module_param_named(ttys, num_ttys, int, 0644);
+module_param_named(auto, auto_connect, bool, 0644);
+module_param_named(loop, create_loop_dev, bool, 0644);
 
 /*
  * Threshold below which the tty is woken for writing
@@ -215,13 +215,6 @@ static void fwtty_log_tx_error(struct fwtty_port *port, int rcode)
 	default:
 		fwtty_err_ratelimited(port, "failed tx: %d\n", rcode);
 	}
-}
-
-static void fwtty_txn_constructor(void *this)
-{
-	struct fwtty_transaction *txn = this;
-
-	init_timer(&txn->fw_txn.split_timeout_timer);
 }
 
 static void fwtty_common_callback(struct fw_card *card, int rcode,
@@ -1667,12 +1660,6 @@ static inline void fill_plug_rsp_nack(struct fwserial_mgmt_pkt *pkt)
 	pkt->hdr.len = cpu_to_be16(mgmt_pkt_expected_len(pkt->hdr.code));
 }
 
-static inline void fill_unplug_req(struct fwserial_mgmt_pkt *pkt)
-{
-	pkt->hdr.code = cpu_to_be16(FWSC_VIRT_CABLE_UNPLUG);
-	pkt->hdr.len = cpu_to_be16(mgmt_pkt_expected_len(pkt->hdr.code));
-}
-
 static inline void fill_unplug_rsp_nack(struct fwserial_mgmt_pkt *pkt)
 {
 	pkt->hdr.code = cpu_to_be16(FWSC_VIRT_CABLE_UNPLUG_RSP | FWSC_RSP_NACK);
@@ -1812,9 +1799,9 @@ static void fwserial_release_port(struct fwtty_port *port, bool reset)
 		(*port->fwcon_ops->notify)(FWCON_NOTIFY_DETACH, port->con_data);
 }
 
-static void fwserial_plug_timeout(unsigned long data)
+static void fwserial_plug_timeout(struct timer_list *t)
 {
-	struct fwtty_peer *peer = (struct fwtty_peer *)data;
+	struct fwtty_peer *peer = from_timer(peer, t, timer);
 	struct fwtty_port *port;
 
 	spin_lock_bh(&peer->lock);
@@ -1866,7 +1853,6 @@ static int fwserial_connect_peer(struct fwtty_peer *peer)
 
 	fill_plug_req(pkt, peer->port);
 
-	setup_timer(&peer->timer, fwserial_plug_timeout, (unsigned long)peer);
 	mod_timer(&peer->timer, jiffies + VIRT_CABLE_PLUG_TIMEOUT);
 	spin_unlock_bh(&peer->lock);
 
@@ -2104,7 +2090,7 @@ static int fwserial_add_peer(struct fw_serial *serial, struct fw_unit *unit)
 	spin_lock_init(&peer->lock);
 	peer->port = NULL;
 
-	init_timer(&peer->timer);
+	timer_setup(&peer->timer, fwserial_plug_timeout, 0);
 	INIT_WORK(&peer->work, fwserial_peer_workfn);
 	INIT_DELAYED_WORK(&peer->connect, fwserial_auto_connect);
 
@@ -2869,7 +2855,7 @@ static int __init fwserial_init(void)
 
 	fwtty_txn_cache = kmem_cache_create("fwtty_txn_cache",
 					    sizeof(struct fwtty_transaction),
-					    0, 0, fwtty_txn_constructor);
+					    0, 0, NULL);
 	if (!fwtty_txn_cache) {
 		err = -ENOMEM;
 		goto unregister_loop;

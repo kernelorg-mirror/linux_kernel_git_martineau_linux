@@ -39,6 +39,27 @@
 #define E1000_WUFC_MC   0x00000008 /* Directed Multicast Wakeup Enable */
 #define E1000_WUFC_BC   0x00000010 /* Broadcast Wakeup Enable */
 
+/* Wake Up Status */
+#define E1000_WUS_EX	0x00000004 /* Directed Exact */
+#define E1000_WUS_ARPD	0x00000020 /* Directed ARP Request */
+#define E1000_WUS_IPV4	0x00000040 /* Directed IPv4 */
+#define E1000_WUS_IPV6	0x00000080 /* Directed IPv6 */
+#define E1000_WUS_NSD	0x00000400 /* Directed IPv6 Neighbor Solicitation */
+
+/* Packet types that are enabled for wake packet delivery */
+#define WAKE_PKT_WUS ( \
+	E1000_WUS_EX   | \
+	E1000_WUS_ARPD | \
+	E1000_WUS_IPV4 | \
+	E1000_WUS_IPV6 | \
+	E1000_WUS_NSD)
+
+/* Wake Up Packet Length */
+#define E1000_WUPL_MASK	0x00000FFF
+
+/* Wake Up Packet Memory stores the first 128 bytes of the wake up packet */
+#define E1000_WUPM_BYTES	128
+
 /* Extended Device Control */
 #define E1000_CTRL_EXT_SDP2_DATA 0x00000040 /* Value of SW Defineable Pin 2 */
 #define E1000_CTRL_EXT_SDP3_DATA 0x00000080 /* Value of SW Defineable Pin 3 */
@@ -332,7 +353,18 @@
 #define E1000_RXPBS_CFG_TS_EN           0x80000000
 
 #define I210_RXPBSIZE_DEFAULT		0x000000A2 /* RXPBSIZE default */
+#define I210_RXPBSIZE_MASK		0x0000003F
+#define I210_RXPBSIZE_PB_32KB		0x00000020
 #define I210_TXPBSIZE_DEFAULT		0x04000014 /* TXPBSIZE default */
+#define I210_TXPBSIZE_MASK		0xC0FFFFFF
+#define I210_TXPBSIZE_PB0_8KB		(8 << 0)
+#define I210_TXPBSIZE_PB1_8KB		(8 << 6)
+#define I210_TXPBSIZE_PB2_4KB		(4 << 12)
+#define I210_TXPBSIZE_PB3_4KB		(4 << 18)
+
+#define I210_DTXMXPKTSZ_DEFAULT		0x00000098
+
+#define I210_SR_QUEUES_NUM		2
 
 /* SerDes Control */
 #define E1000_SCTL_DISABLE_SERDES_LOOPBACK 0x0400
@@ -357,7 +389,8 @@
 #define ETHERNET_IEEE_VLAN_TYPE 0x8100  /* 802.3ac packet */
 
 /* As per the EAS the maximum supported size is 9.5KB (9728 bytes) */
-#define MAX_JUMBO_FRAME_SIZE	0x2600
+#define MAX_JUMBO_FRAME_SIZE		0x2600
+#define MAX_STD_JUMBO_FRAME_SIZE	9216
 
 /* PBA constants */
 #define E1000_PBA_34K 0x0022
@@ -867,6 +900,7 @@
 #define I210_I_PHY_ID        0x01410C00
 #define M88E1543_E_PHY_ID    0x01410EA0
 #define M88E1512_E_PHY_ID    0x01410DD0
+#define BCM54616_E_PHY_ID    0x03625D10
 
 /* M88E1000 Specific Registers */
 #define M88E1000_PHY_SPEC_CTRL     0x10  /* PHY Specific Control Register */
@@ -1023,5 +1057,21 @@
 #define E1000_RTTBCNRC_RF_INT_SHIFT	14
 #define E1000_RTTBCNRC_RF_INT_MASK	\
 	(E1000_RTTBCNRC_RF_DEC_MASK << E1000_RTTBCNRC_RF_INT_SHIFT)
+
+#define E1000_VLAPQF_QUEUE_SEL(_n, q_idx) (q_idx << ((_n) * 4))
+#define E1000_VLAPQF_P_VALID(_n)	(0x1 << (3 + (_n) * 4))
+#define E1000_VLAPQF_QUEUE_MASK	0x03
+
+/* TX Qav Control fields */
+#define E1000_TQAVCTRL_XMIT_MODE	BIT(0)
+#define E1000_TQAVCTRL_DATAFETCHARB	BIT(4)
+#define E1000_TQAVCTRL_DATATRANARB	BIT(8)
+
+/* TX Qav Credit Control fields */
+#define E1000_TQAVCC_IDLESLOPE_MASK	0xFFFF
+#define E1000_TQAVCC_QUEUEMODE		BIT(31)
+
+/* Transmit Descriptor Control fields */
+#define E1000_TXDCTL_PRIORITY		BIT(27)
 
 #endif

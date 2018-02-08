@@ -174,14 +174,6 @@ extern int pci_device_from_OF_node(struct device_node *node,
 				   u8 *bus, u8 *devfn);
 extern void pci_create_OF_bus_map(void);
 
-static inline int isa_vaddr_is_ioport(void __iomem *address)
-{
-	/* No specific ISA handling on ppc32 at this stage, it
-	 * all goes through PCI
-	 */
-	return 0;
-}
-
 #else	/* CONFIG_PPC64 */
 
 /*
@@ -203,7 +195,6 @@ struct pci_dn {
 	struct  pci_dn *parent;
 	struct  pci_controller *phb;	/* for pci devices */
 	struct	iommu_table_group *table_group;	/* for phb's or bridges */
-	struct	device_node *node;	/* back-pointer to the device_node */
 
 	int	pci_ext_config_space;	/* for pci devices */
 
@@ -227,6 +218,7 @@ struct pci_dn {
 #endif
 	struct list_head child_list;
 	struct list_head list;
+	struct resource holes[PCI_SRIOV_NUM_BARS];
 };
 
 /* Get the pointer to a device_node's pci_dn */
@@ -269,16 +261,6 @@ extern void pci_hp_remove_devices(struct pci_bus *bus);
 /** Discover new pci devices under this bus, and add them */
 extern void pci_hp_add_devices(struct pci_bus *bus);
 
-
-extern void isa_bridge_find_early(struct pci_controller *hose);
-
-static inline int isa_vaddr_is_ioport(void __iomem *address)
-{
-	/* Check if address hits the reserved legacy IO range */
-	unsigned long ea = (unsigned long)address;
-	return ea >= ISA_IO_BASE && ea < ISA_IO_END;
-}
-
 extern int pcibios_unmap_io_space(struct pci_bus *bus);
 extern int pcibios_map_io_space(struct pci_bus *bus);
 
@@ -301,6 +283,7 @@ extern void pci_process_bridge_OF_ranges(struct pci_controller *hose,
 /* Allocate & free a PCI host bridge structure */
 extern struct pci_controller *pcibios_alloc_controller(struct device_node *dev);
 extern void pcibios_free_controller(struct pci_controller *phb);
+extern void pcibios_free_controller_deferred(struct pci_host_bridge *bridge);
 
 #ifdef CONFIG_PCI
 extern int pcibios_vaddr_is_ioport(void __iomem *address);

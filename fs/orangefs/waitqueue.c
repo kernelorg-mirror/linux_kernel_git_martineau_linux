@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * (C) 2001 Clemson University and The University of Chicago
  * (C) 2011 Omnibond Systems
@@ -28,10 +29,10 @@ static void orangefs_clean_up_interrupted_operation(struct orangefs_kernel_op_s 
  */
 void purge_waiting_ops(void)
 {
-	struct orangefs_kernel_op_s *op;
+	struct orangefs_kernel_op_s *op, *tmp;
 
 	spin_lock(&orangefs_request_list_lock);
-	list_for_each_entry(op, &orangefs_request_list, list) {
+	list_for_each_entry_safe(op, tmp, &orangefs_request_list, list) {
 		gossip_debug(GOSSIP_WAIT_DEBUG,
 			     "pvfs2-client-core: purging op tag %llu %s\n",
 			     llu(op->tag),
@@ -87,9 +88,9 @@ retry_servicing:
 	 */
 	if (!(flags & ORANGEFS_OP_NO_MUTEX)) {
 		if (flags & ORANGEFS_OP_INTERRUPTIBLE)
-			ret = mutex_lock_interruptible(&request_mutex);
+			ret = mutex_lock_interruptible(&orangefs_request_mutex);
 		else
-			ret = mutex_lock_killable(&request_mutex);
+			ret = mutex_lock_killable(&orangefs_request_mutex);
 		/*
 		 * check to see if we were interrupted while waiting for
 		 * mutex
@@ -124,12 +125,19 @@ retry_servicing:
 		gossip_debug(GOSSIP_WAIT_DEBUG,
 			     "%s:client core is NOT in service.\n",
 			     __func__);
-		timeout = op_timeout_secs * HZ;
+		/*
+		 * Don't wait for the userspace component to return if
+		 * the filesystem is being umounted anyway.
+		 */
+		if (op->upcall.type == ORANGEFS_VFS_OP_FS_UMOUNT)
+			timeout = 0;
+		else
+			timeout = op_timeout_secs * HZ;
 	}
 	spin_unlock(&orangefs_request_list_lock);
 
 	if (!(flags & ORANGEFS_OP_NO_MUTEX))
-		mutex_unlock(&request_mutex);
+		mutex_unlock(&orangefs_request_mutex);
 
 	ret = wait_for_matching_downcall(op, timeout,
 					 flags & ORANGEFS_OP_INTERRUPTIBLE);
@@ -272,9 +280,9 @@ static void
 	} else if (op_state_in_progress(op)) {
 		/* op must be removed from the in progress htable */
 		spin_unlock(&op->lock);
-		spin_lock(&htable_ops_in_progress_lock);
+		spin_lock(&orangefs_htable_ops_in_progress_lock);
 		list_del_init(&op->list);
-		spin_unlock(&htable_ops_in_progress_lock);
+		spin_unlock(&orangefs_htable_ops_in_progress_lock);
 		gossip_debug(GOSSIP_WAIT_DEBUG,
 			     "Interrupted: Removed op %p"
 			     " from htable_ops_in_progress\n",

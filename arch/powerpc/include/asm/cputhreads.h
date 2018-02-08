@@ -1,8 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_POWERPC_CPUTHREADS_H
 #define _ASM_POWERPC_CPUTHREADS_H
 
 #ifndef __ASSEMBLY__
 #include <linux/cpumask.h>
+#include <asm/cpu_has_feature.h>
 
 /*
  * Mapping of threads to cores

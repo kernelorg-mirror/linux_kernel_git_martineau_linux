@@ -186,7 +186,6 @@ static int bma220_write_raw(struct iio_dev *indio_dev,
 }
 
 static const struct iio_info bma220_info = {
-	.driver_module		= THIS_MODULE,
 	.read_raw		= bma220_read_raw,
 	.write_raw		= bma220_write_raw,
 	.attrs			= &bma220_attribute_group,
@@ -253,7 +252,7 @@ static int bma220_probe(struct spi_device *spi)
 	if (ret < 0)
 		return ret;
 
-	ret = iio_triggered_buffer_setup(indio_dev, NULL,
+	ret = iio_triggered_buffer_setup(indio_dev, iio_pollfunc_store_time,
 					 bma220_trigger_handler, NULL);
 	if (ret < 0) {
 		dev_err(&spi->dev, "iio triggered buffer setup failed\n");

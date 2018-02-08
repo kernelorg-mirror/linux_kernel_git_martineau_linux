@@ -133,7 +133,7 @@ static ssize_t iio_bfin_tmr_frequency_show(struct device *dev,
 	return sprintf(buf, "%lu\n", val);
 }
 
-static DEVICE_ATTR(frequency, S_IRUGO | S_IWUSR, iio_bfin_tmr_frequency_show,
+static DEVICE_ATTR(frequency, 0644, iio_bfin_tmr_frequency_show,
 		   iio_bfin_tmr_frequency_store);
 
 static struct attribute *iio_bfin_tmr_trigger_attrs[] = {
@@ -172,7 +172,6 @@ static int iio_bfin_tmr_get_number(int irq)
 }
 
 static const struct iio_trigger_ops iio_bfin_tmr_trigger_ops = {
-	.owner = THIS_MODULE,
 	.set_trigger_state = iio_bfin_tmr_set_state,
 };
 
@@ -260,7 +259,7 @@ out_free_irq:
 out1:
 	iio_trigger_unregister(st->trig);
 out:
-	iio_trigger_put(st->trig);
+	iio_trigger_free(st->trig);
 	return ret;
 }
 
@@ -273,7 +272,7 @@ static int iio_bfin_tmr_trigger_remove(struct platform_device *pdev)
 		peripheral_free(st->t->pin);
 	free_irq(st->irq, st);
 	iio_trigger_unregister(st->trig);
-	iio_trigger_put(st->trig);
+	iio_trigger_free(st->trig);
 
 	return 0;
 }

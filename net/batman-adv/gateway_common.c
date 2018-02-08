@@ -1,4 +1,4 @@
-/* Copyright (C) 2009-2016  B.A.T.M.A.N. contributors:
+/* Copyright (C) 2009-2017  B.A.T.M.A.N. contributors:
  *
  * Marek Lindner
  *
@@ -56,8 +56,8 @@ bool batadv_parse_throughput(struct net_device *net_dev, char *buff,
 		if (strncasecmp(tmp_ptr, "mbit", 4) == 0)
 			bw_unit_type = BATADV_BW_UNIT_MBIT;
 
-		if ((strncasecmp(tmp_ptr, "kbit", 4) == 0) ||
-		    (bw_unit_type == BATADV_BW_UNIT_MBIT))
+		if (strncasecmp(tmp_ptr, "kbit", 4) == 0 ||
+		    bw_unit_type == BATADV_BW_UNIT_MBIT)
 			*tmp_ptr = '\0';
 	}
 
@@ -190,7 +190,7 @@ ssize_t batadv_gw_bandwidth_set(struct net_device *net_dev, char *buff,
 	if (!up_new)
 		up_new = 1;
 
-	if ((down_curr == down_new) && (up_curr == up_new))
+	if (down_curr == down_new && up_curr == up_new)
 		return count;
 
 	batadv_gw_reselect(bat_priv);
@@ -224,16 +224,16 @@ static void batadv_gw_tvlv_ogm_handler_v1(struct batadv_priv *bat_priv,
 	/* only fetch the tvlv value if the handler wasn't called via the
 	 * CIFNOTFND flag and if there is data to fetch
 	 */
-	if ((flags & BATADV_TVLV_HANDLER_OGM_CIFNOTFND) ||
-	    (tvlv_value_len < sizeof(gateway))) {
+	if (flags & BATADV_TVLV_HANDLER_OGM_CIFNOTFND ||
+	    tvlv_value_len < sizeof(gateway)) {
 		gateway.bandwidth_down = 0;
 		gateway.bandwidth_up = 0;
 	} else {
 		gateway_ptr = tvlv_value;
 		gateway.bandwidth_down = gateway_ptr->bandwidth_down;
 		gateway.bandwidth_up = gateway_ptr->bandwidth_up;
-		if ((gateway.bandwidth_down == 0) ||
-		    (gateway.bandwidth_up == 0)) {
+		if (gateway.bandwidth_down == 0 ||
+		    gateway.bandwidth_up == 0) {
 			gateway.bandwidth_down = 0;
 			gateway.bandwidth_up = 0;
 		}
@@ -241,10 +241,9 @@ static void batadv_gw_tvlv_ogm_handler_v1(struct batadv_priv *bat_priv,
 
 	batadv_gw_node_update(bat_priv, orig, &gateway);
 
-	/* restart gateway selection if fast or late switching was enabled */
-	if ((gateway.bandwidth_down != 0) &&
-	    (atomic_read(&bat_priv->gw.mode) == BATADV_GW_MODE_CLIENT) &&
-	    (atomic_read(&bat_priv->gw.sel_class) > 2))
+	/* restart gateway selection */
+	if (gateway.bandwidth_down != 0 &&
+	    atomic_read(&bat_priv->gw.mode) == BATADV_GW_MODE_CLIENT)
 		batadv_gw_check_election(bat_priv, orig);
 }
 
@@ -254,6 +253,11 @@ static void batadv_gw_tvlv_ogm_handler_v1(struct batadv_priv *bat_priv,
  */
 void batadv_gw_init(struct batadv_priv *bat_priv)
 {
+	if (bat_priv->algo_ops->gw.init_sel_class)
+		bat_priv->algo_ops->gw.init_sel_class(bat_priv);
+	else
+		atomic_set(&bat_priv->gw.sel_class, 1);
+
 	batadv_tvlv_handler_register(bat_priv, batadv_gw_tvlv_ogm_handler_v1,
 				     NULL, BATADV_TVLV_GW, 1,
 				     BATADV_TVLV_HANDLER_OGM_CIFNOTFND);

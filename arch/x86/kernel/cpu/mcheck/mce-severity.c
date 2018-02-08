@@ -14,7 +14,7 @@
 #include <linux/init.h>
 #include <linux/debugfs.h>
 #include <asm/mce.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include "mce-internal.h"
 
@@ -204,7 +204,7 @@ static int error_context(struct mce *m)
 	return IN_KERNEL;
 }
 
-static int mce_severity_amd_smca(struct mce *m, int err_ctx)
+static int mce_severity_amd_smca(struct mce *m, enum context err_ctx)
 {
 	u32 addr = MSR_AMD64_SMCA_MCx_CONFIG(m->bank);
 	u32 low, high;
@@ -245,6 +245,9 @@ static int mce_severity_amd(struct mce *m, int tolerant, char **msg, bool is_exc
 
 	if (m->status & MCI_STATUS_UC) {
 
+		if (ctx == IN_KERNEL)
+			return MCE_PANIC_SEVERITY;
+
 		/*
 		 * On older systems where overflow_recov flag is not present, we
 		 * should simply panic if an error overflow occurs. If
@@ -254,10 +257,6 @@ static int mce_severity_amd(struct mce *m, int tolerant, char **msg, bool is_exc
 		if (mce_flags.overflow_recov) {
 			if (mce_flags.smca)
 				return mce_severity_amd_smca(m, ctx);
-
-			/* software can try to contain */
-			if (!(m->mcgstatus & MCG_STATUS_RIPV) && (ctx == IN_KERNEL))
-				return MCE_PANIC_SEVERITY;
 
 			/* kill current process */
 			return MCE_AR_SEVERITY;
@@ -311,7 +310,7 @@ static int mce_severity_intel(struct mce *m, int tolerant, char **msg, bool is_e
 			*msg = s->msg;
 		s->covered = 1;
 		if (s->sev >= MCE_UC_SEVERITY && ctx == IN_KERNEL) {
-			if (panic_on_oops || tolerant < 1)
+			if (tolerant < 1)
 				return MCE_PANIC_SEVERITY;
 		}
 		return s->sev;

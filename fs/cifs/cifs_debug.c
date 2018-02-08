@@ -24,7 +24,7 @@
 #include <linux/ctype.h>
 #include <linux/module.h>
 #include <linux/proc_fs.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include "cifspdu.h"
 #include "cifsglob.h"
 #include "cifsproto.h"
@@ -152,6 +152,7 @@ static int cifs_debug_data_proc_show(struct seq_file *m, void *v)
 	list_for_each(tmp1, &cifs_tcp_ses_list) {
 		server = list_entry(tmp1, struct TCP_Server_Info,
 				    tcp_ses_list);
+		seq_printf(m, "\nNumber of credits: %d", server->credits);
 		i++;
 		list_for_each(tmp2, &server->smb_ses_list) {
 			ses = list_entry(tmp2, struct cifs_ses,
@@ -159,8 +160,13 @@ static int cifs_debug_data_proc_show(struct seq_file *m, void *v)
 			if ((ses->serverDomain == NULL) ||
 				(ses->serverOS == NULL) ||
 				(ses->serverNOS == NULL)) {
-				seq_printf(m, "\n%d) entry for %s not fully "
-					   "displayed\n\t", i, ses->serverName);
+				seq_printf(m, "\n%d) Name: %s Uses: %d Capability: 0x%x\tSession Status: %d\t",
+					i, ses->serverName, ses->ses_count,
+					ses->capabilities, ses->status);
+				if (ses->session_flags & SMB2_SESSION_FLAG_IS_GUEST)
+					seq_printf(m, "Guest\t");
+				else if (ses->session_flags & SMB2_SESSION_FLAG_IS_NULL)
+					seq_printf(m, "Anonymous\t");
 			} else {
 				seq_printf(m,
 				    "\n%d) Name: %s  Domain: %s Uses: %d OS:"

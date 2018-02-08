@@ -132,7 +132,7 @@ static void exynos_set_wakeupmask(long mask)
 
 static void exynos_cpu_set_boot_vector(long flags)
 {
-	writel_relaxed(virt_to_phys(exynos_cpu_resume),
+	writel_relaxed(__pa_symbol(exynos_cpu_resume),
 		       exynos_boot_vector_addr());
 	writel_relaxed(flags, exynos_boot_vector_flag());
 }
@@ -167,8 +167,7 @@ void exynos_enter_aftr(void)
 
 	exynos_pm_central_suspend();
 
-	if (of_machine_is_compatible("samsung,exynos4212") ||
-	    of_machine_is_compatible("samsung,exynos4412")) {
+	if (of_machine_is_compatible("samsung,exynos4412")) {
 		/* Setting SEQ_OPTION register */
 		pmu_raw_writel(S5P_USE_STANDBY_WFI0 | S5P_USE_STANDBY_WFE0,
 			       S5P_CENTRAL_SEQ_OPTION);
@@ -238,7 +237,7 @@ static int exynos_cpu0_enter_aftr(void)
 
 abort:
 	if (cpu_online(1)) {
-		unsigned long boot_addr = virt_to_phys(exynos_cpu_resume);
+		unsigned long boot_addr = __pa_symbol(exynos_cpu_resume);
 
 		/*
 		 * Set the boot vector to something non-zero
@@ -330,7 +329,7 @@ cpu1_aborted:
 
 static void exynos_pre_enter_aftr(void)
 {
-	unsigned long boot_addr = virt_to_phys(exynos_cpu_resume);
+	unsigned long boot_addr = __pa_symbol(exynos_cpu_resume);
 
 	(void)exynos_set_boot_addr(1, boot_addr);
 }
