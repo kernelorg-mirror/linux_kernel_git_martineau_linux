@@ -50,7 +50,7 @@ static struct socket *__mptcp_nmpc_socket(const struct mptcp_sock *msk)
 		return NULL;
 
 	return msk->subflow;
-}
+
 
 static bool __mptcp_needs_tcp_fallback(const struct mptcp_sock *msk)
 {
